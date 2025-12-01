@@ -1,0 +1,15 @@
+# Python ignores
+__pycache__/
+*.py[cod]
+llm-trade/
+.env
+
+# MacOS ignores
+.DS_Store
+
+# Logs
+logs/
+*.log
+
+# Project specific
+data/
