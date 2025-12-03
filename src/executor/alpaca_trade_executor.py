@@ -148,6 +148,6 @@ if __name__ == '__main__':
         print(f"🟢 账户状态活跃。当前可用现金: ${float(account.cash):.2f}")
         
         # 执行 TSLA 的交易逻辑
-        execute_trading_signal(ticker="TSLA")
+        execute_trading_signal(ticker="COST")
         
         print("\n--- 执行完成 ---")
