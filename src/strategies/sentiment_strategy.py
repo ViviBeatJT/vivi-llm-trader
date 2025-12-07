@@ -9,6 +9,8 @@ from typing import Literal
 
 # 1. 定义结构化输出的 Pydantic 模型
 # Pydantic 模型是 GenAI 强制结构化输出的最佳方式
+
+
 class TradingSignal(BaseModel):
     """交易信号模型"""
     signal: Literal["BUY", "SELL", "HOLD"] = Field(
@@ -23,6 +25,7 @@ class TradingSignal(BaseModel):
     reason: str = Field(
         description="简要说明给出此信号的原因，必须基于新闻内容。"
     )
+
 
 # 2. 初始化 Gemini 客户端
 load_dotenv()
@@ -41,15 +44,16 @@ SYSTEM_PROMPT = (
     "输出必须是有效的 JSON，且信号必须是 BUY, SELL, 或 HOLD 之一。请侧重于短期影响。"
 )
 
+
 def get_trading_signal_from_text(news_text: str, ticker: str = "TSLA") -> dict:
     """
     使用 Gemini API 分析新闻文本，并返回结构化的交易信号。
     """
     if not client:
         return {"error": "Client not initialized", "signal": "HOLD"}
-        
+
     print(f"--- 正在使用 Gemini 2.5 Flash 分析 {ticker} 的新闻情绪... ---")
-    
+
     # 构造用户输入
     user_prompt = f"分析以下关于 {ticker} 的新闻，并给出交易信号：\n\n新闻内容：{news_text}"
 
@@ -61,10 +65,10 @@ def get_trading_signal_from_text(news_text: str, ticker: str = "TSLA") -> dict:
                 # 强制要求 JSON 输出，并使用 Pydantic schema
                 response_mime_type="application/json",
                 response_schema=TradingSignal,
-                temperature=0.1 # 调低温度，输出更稳定
+                temperature=0.1  # 调低温度，输出更稳定
             )
         )
-        
+
         # response.text 是一个符合 Pydantic 模型的 JSON 字符串
         # 我们将其解析为 Python 字典方便后续处理
         return json.loads(response.text)
@@ -82,11 +86,11 @@ if __name__ == '__main__':
         "hitting a new all-time high driven by strong demand for Model Y. "
         "The company is also announcing a new, lower-cost battery technology next week."
     )
-    
+
     print("\n[测试案例 1: 模拟利好消息]")
     signal_bullish = get_trading_signal_from_text(bullish_news, ticker="TSLA")
     print(json.dumps(signal_bullish, indent=4, ensure_ascii=False))
-    
+
     # 模拟一条利空新闻
     bearish_news = (
         "The NHTSA announced a formal investigation into Tesla's Autopilot system "
