@@ -20,7 +20,7 @@ client = genai.Client()
 
 CACHE_FILE = 'gemini_cache.json'
 GEMINI_MODEL="gemini-2.5-flash-lite"
-
+cache=None
 
 def load_cache():
     """从本地文件加载 Gemini 响应缓存。"""
@@ -99,9 +99,6 @@ def get_mean_reversion_signal(ticker: str = "TSLA", lookback_minutes: int = 60, 
     cache_key_input = f"{ticker}|{end_dt}|{user_prompt}"
     cache_key = hashlib.sha256(cache_key_input.encode('utf-8')).hexdigest()
 
-    # 4. 尝试加载缓存
-    cache = load_cache()
-
     if cache_key in cache:
         print(f"✅ 缓存命中！返回 {end_dt.strftime('%Y-%m-%d %H:%M UTC')} 的缓存结果。")
         return cache[cache_key]
@@ -109,7 +106,7 @@ def get_mean_reversion_signal(ticker: str = "TSLA", lookback_minutes: int = 60, 
     print(f"--- 缓存未命中。正在调用 Gemini 2.5 Flash 分析 {ticker} 的布林带模式... ---")
     # --- 缓存逻辑结束 ---
 
-    # 5. 调用 Gemini API (如果缓存未命中)
+    # 4. 调用 Gemini API (如果缓存未命中)
     # 只有当后面还有时间点需要测试时才暂停
     print(f"⏸️ 暂停 {delay_seconds} 秒以遵守 Gemini API 速率限制...")
     time.sleep(delay_seconds)
@@ -127,7 +124,7 @@ def get_mean_reversion_signal(ticker: str = "TSLA", lookback_minutes: int = 60, 
 
         signal_result = json.loads(response.text)
 
-        # 6. 将结果存入缓存并保存文件
+        # 5. 将结果存入缓存并保存文件
         cache[cache_key] = signal_result
         save_cache(cache)
 
@@ -136,8 +133,6 @@ def get_mean_reversion_signal(ticker: str = "TSLA", lookback_minutes: int = 60, 
     except Exception as e:
         print(f"调用 Gemini API 发生错误: {e}")
         return {"error": str(e), "signal": "HOLD"}
-
-# src/strategies/mean_reversion_strategy.py (替换 backtest_full_day 函数)
 
 
 def backtest_arbitrary_period(ticker: str, start_dt: datetime, end_dt: datetime, step_minutes: int = 5, delay_seconds: int = 15):
@@ -226,6 +221,9 @@ if __name__ == '__main__':
     # ----------------------------------------------------
     # 设置回测日期和股票
     # ----------------------------------------------------
+    # 尝试加载缓存
+    cache = load_cache()
+    
     TICKER = "TSLA"
 
     # 回测起始时间
