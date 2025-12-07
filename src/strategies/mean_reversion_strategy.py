@@ -61,7 +61,9 @@ def get_mean_reversion_signal(cache: dict, ticker: str = "TSLA", lookback_minute
     kline_data_text = get_latest_bars(
         ticker=ticker, lookback_minutes=lookback_minutes, end_dt=end_dt)
 
-    if "" in kline_data_text:
+    # print("kline_data_text = \n", kline_data_text)
+    
+    if kline_data_text == "":
         print(f"🔴 错误：未能获取 {ticker} 的有效数据。")
         return {"error": "No data", "signal": "HOLD"}
 
