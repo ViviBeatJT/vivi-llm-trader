@@ -3,99 +3,106 @@
 from datetime import datetime, timezone, timedelta
 from src.cache.trading_cache import TradingCache # 导入 TradingCache 类
 from src.strategies.mean_reversion_strategy import get_mean_reversion_signal
-from src.executor.base_executor import BaseExecutor
+# 从 manager 导入 PositionManager (新增)
+from src.manager.position_manager import PositionManager 
+from src.executor.base_executor import BaseExecutor # 导入 BaseExecutor (用于旧代码兼容，但不再直接使用)
 from src.data.alpaca_data_fetcher import AlpacaDataFetcher # 导入 AlpacaDataFetcher 类
 from typing import Optional
 import pandas as pd # 确保导入 pandas
 
-def backtest_arbitrary_period(cache: TradingCache, # 更改参数类型为 TradingCache
+
+# 注意：旧的 executor: BaseExecutor 参数已替换为 position_manager: PositionManager
+def backtest_arbitrary_period(cache: TradingCache, 
                               ticker: str,
                               start_dt: datetime,
                               end_dt: datetime,
-                              executor: BaseExecutor,
-                              data_fetcher: AlpacaDataFetcher, # 新增参数：数据获取器实例
+                              position_manager: PositionManager, # 核心改动：接收 PositionManager
+                              data_fetcher: AlpacaDataFetcher, 
                               step_minutes: int = 5,
-                              is_live_run: bool = False, # 新增参数：是否为实时运行模式
+                              is_live_run: bool = False, 
                               delay_seconds: int = 15):
     """
     自动回测/运行指定时间段内的交易状态。
     在回测模式下，使用时间戳模拟历史数据；在实时模式下，获取实时价格。
+    交易执行和状态管理现在完全通过 PositionManager 进行。
 
     Args:
         cache: Gemini 响应缓存 (TradingCache 实例)。
         ticker: 股票代码。
         start_dt: 运行的起始时间。
         end_dt: 运行的结束时间。
-        executor: 交易执行器实例 (SimulationExecutor 或 AlpacaExecutor)。
+        position_manager: 仓位管理器实例，负责状态管理和交易执行。
         data_fetcher: AlpacaDataFetcher 实例，用于获取实时价格。
         step_minutes: 每次循环的时间步长（分钟）。
-        is_live_run: 如果为 True，则调用 Alpaca API 获取实时价格。
-        delay_seconds: 每次 LLM 调用后的延迟时间，用于遵守速率限制。
+        is_live_run: 如果为 True，则为实时运行模式。
+        delay_seconds: 实时模式下的等待时间（秒）。
     """
-    results = []
-
-    # 确保起始时间小于等于结束时间
-    if start_dt >= end_dt and not is_live_run:
-        print("❌ 错误：起始时间必须早于结束时间（回测模式）。")
-        # 返回空的 results, None 日志, 和当前的 equity
-        return results, None, executor.get_account_status(0.0)['equity'] 
-
-    # 确保时间对象带有 UTC 时区信息
-    if start_dt.tzinfo is None:
-        start_dt = start_dt.replace(tzinfo=timezone.utc)
-    if end_dt.tzinfo is None:
-        end_dt = end_dt.replace(tzinfo=timezone.utc)
-
+    
     current_time = start_dt
-    time_step = timedelta(minutes=step_minutes)
+    results = [] # 记录所有信号
+    
+    # 假设 PositionManager 已经初始化，获取其初始状态
+    initial_status = position_manager.get_account_status(current_price=0.0) 
+    initial_cash = initial_status.get('cash', 0.0)
+    
+    print(f"📈 开始运行: {start_dt} 至 {end_dt} (步长: {step_minutes} 分钟) | 初始现金: ${initial_cash:,.2f}")
+    
+    # 获取 PositionManager 内部的 executor 类型，用于打印
+    executor_type = position_manager.executor.__class__.__name__
 
-    # 打印运行范围
-    run_mode = "实时运行 (Live/Paper)" if is_live_run else "历史回测"
-    print(f"\n--- 🚀 开始 {run_mode} ({ticker}) ---")
-    print(
-        f"运行范围: {start_dt.strftime('%Y-%m-%d %H:%M UTC')} 至 {end_dt.strftime('%Y-%m-%d %H:%M UTC')}")
-    print(f"步长: {step_minutes} 分钟")
-    print("-" * 30)
-
-    # 确保 current_price 在循环开始前有值
-    current_price = 0.0
-
-    while current_time <= end_dt or is_live_run:
-        if is_live_run:
-            # 实时模式下，使用当前时间作为策略分析时间点
-            time_for_signal = datetime.now(timezone.utc).astimezone(timezone.utc)
-            # **更新：使用 data_fetcher 实例调用 get_latest_price**
-            current_price = data_fetcher.get_latest_price(ticker) 
-        else:
-            # 回测模式下，使用循环时间
-            time_for_signal = current_time
-            # 回测模式下，初始价格为 0.0，策略函数会返回对应时间点的收盘价
-            current_price = 0.0 
+    while current_time <= end_dt:
+        time_for_signal = current_time.astimezone(timezone.utc)
+        
+        # 1. 获取最新价格 (回测使用缓存/历史，实时使用API)
+        current_price = data_fetcher.get_price_data(
+            ticker=ticker,
+            timestamp=time_for_signal,
+            cache=cache,
+            is_live_run=is_live_run,
+            delay_seconds=delay_seconds
+        )
+        
+        if current_price is None or current_price <= 0:
+            print(f"❌ 警告: 在 {time_for_signal} 无法获取有效价格，跳过此时间点。")
+            current_time += timedelta(minutes=step_minutes)
+            continue
             
-        print(f"--- 📊 正在处理时间点: {time_for_signal.strftime('%Y-%m-%d %H:%M UTC')} ---")
+        # 2. 获取当前账户状态 (使用 PositionManager)
+        current_status = position_manager.get_account_status(current_price=current_price)
+        current_cash = current_status['cash']
+        current_position = current_status['position']
+        avg_cost = current_status['avg_cost']
         
-        # 1. 策略调用（获取信号）
-        # time_for_signal 决定了 LLM 分析的 K线数据的结束时间点
-        # get_mean_reversion_signal 函数返回 (signal_result, latest_price)
-        signal_result, current_price = get_mean_reversion_signal(
-            cache, ticker, time_for_signal, lookback_minutes=60, delay_seconds=delay_seconds) # lookback_minutes 默认值 60
+        # 3. 生成交易信号
+        signal, confidence, reason = get_mean_reversion_signal(
+            timestamp=time_for_signal,
+            current_price=current_price,
+            current_position=current_position,
+            current_cash=current_cash,
+            avg_cost=avg_cost,
+            executor_type=executor_type # 传递执行器类型
+        )
         
-        signal = signal_result.get('signal')
-        confidence = signal_result.get('confidence_score', 0)
-        reason = signal_result.get('reason', 'N/A')
-
-        if current_price <= 0.0:
-            print("⚠️ 价格无效，跳过本周期。")
-        elif signal in ["BUY", "SELL"]:
-            # 2. 执行交易
-            success = executor.execute_trade(
+        # 4. 执行交易 (通过 PositionManager 统一处理)
+        if signal in ["BUY", "SELL"]:
+            print(f"🔥 交易信号: {signal:4} | 价格: ${current_price:.2f} | 理由: {reason}")
+            
+            # **核心改动：让 PositionManager 来执行交易并更新自己的状态**
+            # PositionManager 会内部调用 BaseExecutor.execute_trade，然后更新自身的 cash/position/avg_cost。
+            trade_result = position_manager.execute_trade_and_update_state(
                 timestamp=time_for_signal,
                 signal=signal,
-                current_price=current_price
+                current_price=current_price,
             )
-            print(f"    交易信号: {signal:4} | 价格: ${current_price:.2f} | 执行结果: {'成功' if success else '失败'}")
             
-            # 记录交易信号和结果
+            success = trade_result['executed']
+            
+            if success:
+                print(f"    ✅ 交易执行成功。{trade_result['log_message']}")
+            else:
+                print(f"    ❌ 交易执行失败。{trade_result['log_message']}")
+            
+            # 记录信号和执行结果
             results.append({
                 'timestamp_utc': time_for_signal,
                 'signal': signal,
@@ -125,10 +132,10 @@ def backtest_arbitrary_period(cache: TradingCache, # 更改参数类型为 Tradi
         current_time += time_step
 
     # --- 最终总结 ---
-    # 获取最终的账户状态
-    final_status = executor.get_account_status(current_price=current_price)
+    # 获取最终的账户状态 (使用 PositionManager)
+    final_status = position_manager.get_account_status(current_price=current_price)
     final_equity = final_status.get('equity', 0.0)
-    trade_log_df = executor.get_trade_log() # 从 Executor 获取交易日志
+    trade_log_df = position_manager.get_trade_log() # 从 PositionManager 获取交易日志
 
     print("\n--- ✅ 运行完成。结果总结 ---")
     
@@ -138,13 +145,6 @@ def backtest_arbitrary_period(cache: TradingCache, # 更改参数类型为 Tradi
     sell_count = sum(1 for r in results if r['signal'] == 'SELL')
 
     print(f"总测试点数: {total_signals}")
-    print(f"买入信号 (BUY): {buy_count} 次")
-    print(f"卖出信号 (SELL): {sell_count} 次")
-    print("-" * 30)
+    print(f"买入信号 ({buy_count}), 卖出信号 ({sell_count})")
     
-    return results, trade_log_df, final_equity
-
-
-if __name__ == '__main__':
-    # 运行此文件需要 SimulationExecutor 的定义，此处仅保留函数定义
-    print("请通过 backtest_runner.py 运行完整的交易系统。")
+    return final_equity, trade_log_df

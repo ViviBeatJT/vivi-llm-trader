@@ -1,6 +1,8 @@
 from datetime import datetime, timezone
 # 导入 TradingCache 类
 from src.cache.trading_cache import TradingCache 
+# 导入 PositionManager 类 (假设它在 manager 目录下)
+from src.manager.position_manager import PositionManager 
 from src.test.backtest import backtest_arbitrary_period
 from src.executor.simulation_executor import SimulationExecutor # 模拟执行器（仓位管理）
 from src.executor.alpaca_trade_executor import AlpacaExecutor # 实盘/纸盘执行器
@@ -32,120 +34,91 @@ FINANCE_PARAMS = {
     'STAMP_DUTY_RATE': STAMP_DUTY_RATE,
 }
 
-# --- 2. 模式切换开关（核心） ---
-# True: 使用 SimulationExecutor 进行本地回测/模拟
-# False: 使用 AlpacaExecutor 进行实盘 (需确保 Alpaca 客户端配置正确)
+## --- 2. 运行配置 ---
+TICKER = "TSLA"  # 交易标的
+START_TIME = datetime(2023, 10, 1, tzinfo=timezone.utc)
+END_TIME = datetime(2023, 10, 31, tzinfo=timezone.utc)
+STEP_MINUTES = 5
+
+# 设置运行模式：True 为回测模式，False 为实盘/纸盘模式
 IS_BACKTEST_MODE = True 
+# IS_BACKTEST_MODE = False # 启用 Alpaca 实时运行
 
-# 如果使用 AlpacaExecutor，可以选择是否使用 paper 账户
-ALPACA_PAPER_MODE = True
+# ----------------------------------------------------
+# 3. 初始化执行器和仓位管理器 (UPDATED LOGIC)
+# ----------------------------------------------------
 
-# --- 3. 实例化数据获取器（全局使用） ---
-# 实例化 DataFetcher，用于获取实时价格
+# 根据模式选择交易执行器
+if IS_BACKTEST_MODE:
+    print("\n--- 🔧 运行模式: 回测 (SimulationExecutor) ---")
+    # SimulationExecutor 需要 FINANCE_PARAMS 来计算交易细节
+    executor = SimulationExecutor(FINANCE_PARAMS)
+else:
+    print("\n--- 🚀 运行模式: 实盘/纸盘 (AlpacaExecutor) ---")
+    # AlpacaExecutor 需要 paper 标志和最大分配比例
+    executor = AlpacaExecutor(paper=True, max_allocation_rate=MAX_ALLOCATION)
+    
+# 使用选定的 executor 和财务参数初始化 PositionManager
+# PositionManager 成为状态管理和交易执行的统一入口
+position_manager = PositionManager(executor, FINANCE_PARAMS) 
+
+# 初始化数据获取器
 data_fetcher = AlpacaDataFetcher()
 
+# ----------------------------------------------------
+# 4. 执行回测/运行 (UPDATED CALL)
+# ----------------------------------------------------
 
-if __name__ == '__main__':
-    # ----------------------------------------------------
-    # 模式选择和执行器初始化
-    # ----------------------------------------------------
-    TICKER = "TSLA"
+# 自动处理缓存
+cache = TradingCache(ticker, os.path.join('cache', f'{ticker}_trading_cache.json'))
+initial_cache_size = len(cache.data)
+
+final_equity, trade_log_df = backtest_arbitrary_period(
+    cache=cache,
+    ticker=TICKER,
+    start_dt=START_TIME,
+    end_dt=END_TIME,
+    # 将 PositionManager 实例传入
+    position_manager=position_manager, 
+    data_fetcher=data_fetcher,
+    step_minutes=STEP_MINUTES,
+    is_live_run=not IS_BACKTEST_MODE
+)
+
+# ----------------------------------------------------
+# 5. 缓存处理
+# ----------------------------------------------------
+
+if len(cache.data) > initial_cache_size:
+    print(f"\n--- 💾 发现 {len(cache.data) - initial_cache_size} 个新缓存条目。正在保存... ---")
+    cache.save()
+else:
+    print("\n--- 📝 未发现新缓存条目，跳过文件保存。 ---")
+
+# ----------------------------------------------------
+# 6. 结果打印与总结
+# ----------------------------------------------------
+
+total_net_pnl = final_equity - INITIAL_CAPITAL
+
+print("\n--- 💰 回测/运行结果摘要 ---")
+# 打印 PositionManager 内部的执行器类型
+print(f"执行模式: {position_manager.executor.__class__.__name__}") 
+print(f"初始资产: {INITIAL_CAPITAL:,.2f} USD")
+print(f"最终资产: {final_equity:,.2f} USD")
+print(f"总净收益: {total_net_pnl:,.2f} USD")
+print("-" * 30)
+
+if trade_log_df is not None and not trade_log_df.empty:
+    print("\n详细交易日志:")
+    # 只显示关键列，并格式化输出
+    log_display = trade_log_df[['time', 'type', 'qty', 'price', 'fee', 'net_pnl', 'current_pos']]
+    log_display['time'] = log_display['time'].dt.strftime('%Y-%m-%d %H:%M')
+    print(log_display.to_markdown(index=False, floatfmt=".2f"))
     
-    if IS_BACKTEST_MODE:
-        print("💡 模式选择: 回测模拟 (SimulationExecutor)")
-        # 使用 SimulationExecutor 进行回测
-        executor = SimulationExecutor(FINANCE_PARAMS)
-        
-        # 回测需要明确的开始和结束时间
-        START_DATE = datetime(2025, 12, 4, 19, 0, 0, tzinfo=timezone.utc)
-        END_DATE = datetime(2025, 12, 4, 20, 0, 0, tzinfo=timezone.utc)
-        
-        # 初始资金从 FINANCE_PARAMS 中获取，用于最终 P&L 计算
-        initial_capital = FINANCE_PARAMS.get('INITIAL_CAPITAL', 0.0)
-        STEP_MINUTES = 5
+else:
+    print("未发生任何交易。")
 
-    else:
-        print(f"🚀 模式选择: Alpaca {'纸盘' if ALPACA_PAPER_MODE else '实盘'} (AlpacaExecutor)")
-        
-        # 检查必要的环境变量
-        if not os.getenv('ALPACA_API_KEY_ID') or not os.getenv('ALPACA_SECRET_KEY'):
-            print("❌ 错误：未配置 ALPACA_API_KEY_ID 或 ALPACA_SECRET_KEY。请检查 .env 文件。")
-            exit()
-            
-        # 使用 AlpacaExecutor 进行实盘/纸盘交易
-        executor = AlpacaExecutor(paper=ALPACA_PAPER_MODE, max_allocation_rate=MAX_ALLOCATION)
-        
-        # 实盘运行：通常只运行一次策略，或在一个无限循环中运行
-        START_DATE = datetime.now(timezone.utc)
-        # 仅测试一次，所以结束时间设为开始时间，backtest_arbitrary_period 会处理边界条件
-        END_DATE = START_DATE 
-        
-        # **更新：使用 data_fetcher 实例获取最新价格**
-        current_price = data_fetcher.get_latest_price(TICKER)
-        
-        # 获取 Alpaca 账户的初始权益作为 P&L 计算基准
-        initial_status = executor.get_account_status(current_price=current_price) 
-        initial_capital = initial_status.get('equity', 0.0)
-        STEP_MINUTES = 1 # 实时交易可以更频繁
-
-    # ----------------------------------------------------
-    # 设置回测/运行参数
-    # ----------------------------------------------------\
-    # 初始化 TradingCache 实例
-    cache = TradingCache()
-    initial_cache_size = len(cache) # 记录初始缓存大小
-    
-    # 执行回测或实时运行
-    # backtest_arbitrary_period 现在接受一个 executor 实例
-    all_signals, trade_log_df, final_equity = backtest_arbitrary_period(
-        cache,
-        ticker=TICKER,
-        start_dt=START_DATE,
-        end_dt=END_DATE,
-        executor=executor,  # 传入执行器实例
-        data_fetcher=data_fetcher, # <--- 新增：传入数据获取器实例
-        step_minutes=STEP_MINUTES,
-        is_live_run=not IS_BACKTEST_MODE, 
-    )
-    
-    # ----------------------------------------------------
-    # 缓存保存逻辑
-    # ----------------------------------------------------
-    # 只有当缓存中有新数据时才保存，避免不必要的 I/O
-    if len(cache) > initial_cache_size:
-        print(f"\n--- 💾 发现 {len(cache) - initial_cache_size} 个新缓存条目。正在保存... ---")
-        cache.save()
-    else:
-        print("\n--- 📝 未发现新缓存条目，跳过文件保存。 ---")
-
-    # ----------------------------------------------------
-    # 结果打印与总结
-    # ----------------------------------------------------
-    
-    total_net_pnl = final_equity - initial_capital
-    
-    print("\n--- 💰 回测/运行结果摘要 ---")
-    print(f"执行模式: {executor.__class__.__name__}")
-    print(f"初始资产: {initial_capital:,.2f} USD")
-    print(f"最终资产: {final_equity:,.2f} USD")
-    print(f"总净收益: {total_net_pnl:,.2f} USD")
-    print("-" * 30)
-
-    if trade_log_df is not None and not trade_log_df.empty:
-        print("\n详细交易日志:")
-        # 只显示关键列，并格式化输出
-        log_display = trade_log_df[['time', 'type', 'qty', 'price', 'fee', 'net_pnl', 'current_pos']]
-        log_display['time'] = log_display['time'].dt.strftime('%Y-%m-%d %H:%M')
-        print(log_display.to_markdown(index=False, floatfmt=".2f"))
-        
-    else:
-        print("未发生任何交易。")
-
-    # 最终状态
-    # 在这里传入 0.0 作为 price 是因为我们只关心现金和持仓股数，最终权益已在上一步计算
-    # **更新：实时模式下，应传入最新的价格，但回测模式下价格是历史数据，
-    # 故对于 SimulationExecutor，0.0 是安全的。对于 AlpacaExecutor，我们使用前面获取的 current_price。
-    # 注意：这里的 current_price 是回测循环结束时的价格，用于最终状态的估算。
-    final_price = data_fetcher.get_latest_price(TICKER) if not IS_BACKTEST_MODE else 0.0
-    final_status = executor.get_account_status(current_price=final_price) 
-    print(f"\n最终持仓概览: 现金 ${final_status['cash']:,.2f} | 剩余持仓 {final_status['position']:,.0f} 股")
+# 最终状态
+# 在这里传入 0.0 作为...
+# ... [rest of the file content]
