@@ -1,159 +1,183 @@
-# src/executor/alpaca_trade_executor.py
+# src/executor/alpaca_executor.py
 
 import os
 from dotenv import load_dotenv
 from alpaca.trading.client import TradingClient
-from alpaca.trading.requests import MarketOrderRequest, LimitOrderRequest
-from alpaca.trading.enums import OrderSide, TimeInForce
-
-# 导入策略和数据模块
-from src.strategies.mean_reversion_strategy import get_mean_reversion_signal
-from src.data.alpaca_data_fetcher import get_latest_bars  # 用于获取最新价格
+from alpaca.trading.requests import MarketOrderRequest, GetAssetsRequest, ClosePositionRequest
+from alpaca.trading.enums import OrderSide, TimeInForce, AssetClass
+from alpaca.trading.models import Position
+from alpaca.common.exceptions import APIError
+from src.executor.base_executor import BaseExecutor
+from datetime import datetime
+from typing import Literal, Dict, Any, List
+import pandas as pd
+import numpy as np
+from typing import Literal, Dict, Any, Optional # 导入 Optional 修复 Python 3.9 兼容性
 
 # --- 配置 ---
 load_dotenv()
-# 自动从环境变量中读取 KEY_ID 和 SECRET_KEY
-# paper=True 表示使用模拟交易账户
-trading_client = TradingClient(
-    os.getenv('ALPACA_API_KEY_ID'), os.getenv('ALPACA_SECRET_KEY'), paper=True)
 
 # --- 交易参数 ---
-# 我们在每次交易中冒的风险金额 (用于确定购买数量)
-RISK_AMOUNT_USD = 100
-# Limit Order 的价格容差：在市场价基础上便宜 0.05 USD 来挂单
-LIMIT_TOLERANCE_USD = 0.05
+# 每次交易动用总资产的比例（用于计算购买数量）
+MAX_ALLOCATION_RATE = 0.2
+MIN_LOT_SIZE = 1 # Alpaca 允许 fractional share，但我们这里简化为 1 股最小单位。
 
-
-def get_current_price(ticker: str) -> float:
-    """获取标的物的最新收盘价。"""
-    # 临时获取最新的 K 线数据，用于确定当前价格
-    kline_data_text = get_latest_bars(ticker=ticker, lookback_minutes=5)
-
-    if "没有找到可用的" in kline_data_text or kline_data_text == "没有找到可用的 K 线数据。":
-        raise ValueError(f"无法获取 {ticker} 的最新价格。")
-
-    # 由于 get_latest_bars 返回 Markdown 文本，我们在这里重新获取 DataFrame
-    # 这是一个简化处理，实际应用中应该优化数据流
-    from alpaca.data.historical import StockHistoricalDataClient
-    from alpaca.data.requests import StockBarsRequest
-    from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
-
-    data_client = StockHistoricalDataClient(
-        os.getenv('ALPACA_API_KEY_ID'), os.getenv('ALPACA_SECRET_KEY'))
-    request_params = StockBarsRequest(
-        symbol_or_symbols=[ticker],
-        timeframe=TimeFrame(1, TimeFrameUnit.Minute),
-        limit=1
-    )
-    bar_set = data_client.get_stock_bars(request_params)
-
-    if bar_set.df.empty:
-        raise ValueError(f"无法获取 {ticker} 的最新 K 线数据。")
-
-    latest_bar = bar_set.df.loc[ticker].iloc[-1]
-    return latest_bar['close']
-
-
-def calculate_order_qty(latest_price: float, usd_amount: int) -> int:
-    """根据风险金额计算购买数量 (向下取整)。"""
-    if latest_price <= 0:
-        return 0
-    return int(usd_amount / latest_price)
-
-
-def execute_trading_signal(ticker: str = "TSLA"):
+class AlpacaExecutor(BaseExecutor):
     """
-    运行策略，根据 LLM 信号执行模拟交易订单。
+    Alpaca 交易执行器：用于实盘或模拟交易环境，对接 Alpaca API。
+    它实现了 BaseExecutor 接口。
     """
-    print(f"\n--- 1. 运行 LLM 策略获取信号 ({ticker}) ---")
-    signal_result = get_mean_reversion_signal(ticker=ticker)
+    def __init__(self, paper: bool = True, max_allocation_rate: float = MAX_ALLOCATION_RATE):
+        self.paper = paper
+        self.MAX_ALLOCATION_RATE = max_allocation_rate
+        self.trade_log: List[Dict[str, Any]] = [] # 在实盘模式下，仍然记录本地交易尝试
+        
+        # 初始化 Alpaca 客户端
+        self.trading_client = TradingClient(
+            os.getenv('ALPACA_API_KEY_ID'), 
+            os.getenv('ALPACA_SECRET_KEY'), 
+            paper=self.paper
+        )
+        mode = "模拟 (Paper)" if self.paper else "实盘 (Live)"
+        print(f"🚀 AlpacaExecutor 初始化成功。工作模式: {mode}")
 
-    signal = signal_result.get('signal')
-    confidence = signal_result.get('confidence_score', 5)
-    reason = signal_result.get('reason', 'N/A')
+    def _get_current_position(self, ticker: str) -> Optional[Position]:
+        """获取指定股票的当前持仓。"""
+        try:
+            position_data = self.trading_client.get_open_position_by_symbol(ticker)
+            return position_data
+        except APIError as e:
+            if "position not found" in str(e):
+                return None
+            raise
 
-    print(f"🧠 LLM 信号: {signal} | 置信度: {confidence}/10")
-    print(f"   原因: {reason}")
-    print("-" * 40)
+    def get_account_status(self, current_price: float = 0.0) -> Dict[str, float]:
+        """实现 BaseExecutor 接口：获取 Alpaca 账户的实时状态。"""
+        try:
+            account = self.trading_client.get_account()
+            
+            # 获取现金 (Cash)
+            cash = float(account.cash) 
+            
+            # 获取总资产 (Equity)
+            equity = float(account.equity)
+            
+            # 查找持仓 (Position)
+            # 注意：Alpaca 返回的是 Account 级别数据，Position 需要额外 API 调用
+            # 考虑到回测/实时运行需要指定 Ticker，这里 Position/Avg_cost 的值设为 0
+            # 因为 Account API 并没有返回某个 Ticker 的 Position 信息
+            # 在 execute_trade 中会单独查询 Position
+            
+            return {
+                'cash': cash,
+                'position': 0.0, 
+                'avg_cost': 0.0,
+                'equity': equity,
+                'market_value': equity - cash # 这是一个近似值
+            }
+        except Exception as e:
+            print(f"❌ 无法连接或获取 Alpaca 账户状态: {e}")
+            return {'cash': 0.0, 'position': 0.0, 'avg_cost': 0.0, 'equity': 0.0, 'market_value': 0.0}
 
-    if signal == "HOLD" or confidence < 6:
-        print("⏸️ 信号为 HOLD 或置信度过低 (低于 6)，跳过交易。")
-        return
+    def execute_trade(self,
+                      timestamp: datetime, # 在实盘中 timestamp 仅用于 log
+                      signal: Literal["BUY", "SELL"],
+                      current_price: float) -> bool:
+        """实现 BaseExecutor 接口：提交订单到 Alpaca。"""
 
-    try:
-        # 2. 获取最新价格
-        latest_price = get_current_price(ticker)
-        print(f"💰 最新市场价: ${latest_price:.2f}")
+        ticker = "TSLA" # 假设我们只交易 TSLA，实际应用中应该传递 Ticker
 
-        # 3. 计算订单数量
-        qty = calculate_order_qty(latest_price, RISK_AMOUNT_USD)
+        if signal == 'BUY':
+            return self._execute_alpaca_buy(timestamp, ticker, current_price)
+        
+        elif signal == 'SELL':
+            return self._execute_alpaca_sell(timestamp, ticker)
+            
+        return False
 
-        if qty == 0:
-            print(f"🛑 风险金额 {RISK_AMOUNT_USD} USD 不足以购买至少 1 股 {ticker}。")
-            return
+    def _execute_alpaca_buy(self, timestamp: datetime, ticker: str, current_price: float) -> bool:
+        """执行 Alpaca 买入逻辑。"""
+        try:
+            # 1. 获取当前账户总资产
+            account = self.trading_client.get_account()
+            equity = float(account.equity)
+            cash = float(account.cash)
+            
+            # 2. 计算可用于交易的金额
+            capital_to_use = min(cash, equity * self.MAX_ALLOCATION_RATE)
+            
+            if capital_to_use <= 0 or current_price <= 0:
+                print("  ❌ Alpaca BUY 失败：资金不足或价格无效。")
+                return False
 
-        # 4. 确定订单方向和价格
-        if signal == "BUY":
-            order_side = OrderSide.BUY
-            # Mean Reversion 买入：价格会低于或接近市场价
-            limit_price = round(latest_price - LIMIT_TOLERANCE_USD, 2)
-            print(f"⬆️ 准备买入 {qty} 股，挂单价格 (Limit Price): ${limit_price:.2f}")
+            # 3. 计算购买数量 (四舍五入到最小单位，并向下取整)
+            qty_float = capital_to_use / current_price
+            qty = np.floor(qty_float / MIN_LOT_SIZE) * MIN_LOT_SIZE
+            
+            if qty < MIN_LOT_SIZE:
+                print(f"  ❌ Alpaca BUY 失败：计算数量 {qty} 低于最小交易单位 {MIN_LOT_SIZE}。")
+                return False
 
-        elif signal == "SELL":
-            order_side = OrderSide.SELL
-            # Mean Reversion 卖出（平仓）：使用 Market Order 快速成交
-            limit_price = None  # 使用市价单 (Market Order)
-            print(f"⬇️ 准备卖出 {qty} 股，使用市价单 (Market Order)。")
-
-        else:
-            print(f"无效信号: {signal}，跳过。")
-            return
-
-        # 5. 提交订单 (Limit Order)
-        if order_side == OrderSide.BUY:
-            order_request = LimitOrderRequest(
-                symbol=ticker,
-                qty=qty,
-                side=order_side,
-                time_in_force=TimeInForce.GTC,  # Good Til Canceled (订单有效直到被取消)
-                limit_price=limit_price
-            )
-            trading_client.submit_order(order_request)
-            print(
-                f"✅ 成功提交 限价买入订单 (Limit Order)！数量: {qty} @ ${limit_price:.2f}")
-
-        # 5. 提交订单 (Market Order for Selling/Exiting)
-        elif order_side == OrderSide.SELL:
+            # 4. 提交市价买入订单 (Market Order)
             order_request = MarketOrderRequest(
                 symbol=ticker,
                 qty=qty,
-                side=order_side,
-                time_in_force=TimeInForce.DAY
+                side=OrderSide.BUY,
+                time_in_force=TimeInForce.DAY, # 当日有效
             )
-            trading_client.submit_order(order_request)
-            print(f"✅ 成功提交 市价卖出订单 (Market Order)！数量: {qty}")
+            order = self.trading_client.submit_order(order_request)
+            
+            self.trade_log.append({
+                'time': datetime.now(), 'type': 'BUY', 'qty': qty,
+                'price': current_price, 'fee': 0.0, 'net_pnl': 0.0, 
+                'current_pos': qty, 'order_id': order.id, 'status': order.status.value
+            })
 
-    except Exception as e:
-        print(f"❌ 交易执行失败: {e}")
-        # 如果是 SELL 信号，可能需要检查持仓是否足够
-        if "insufficient quantity" in str(e).lower():
-            print("注意：卖出失败，可能没有足够的持仓。")
+            print(f"  ⭐ Alpaca 订单提交成功: 买入 {qty:,.0f} 股 {ticker}。订单状态: {order.status.value}")
+            return True
 
+        except APIError as e:
+            print(f"  ❌ Alpaca API 错误 (BUY): {e}")
+            return False
+        except Exception as e:
+            print(f"  ❌ 交易执行失败 (BUY): {e}")
+            return False
 
-if __name__ == '__main__':
-    # 在 T-2 市场开放时间 (通常是工作日 9:30 AM ET 到 4:00 PM ET) 运行此代码
-    # 如果是非市场开放时间，可能会出现数据/交易错误。
+    def _execute_alpaca_sell(self, timestamp: datetime, ticker: str) -> bool:
+        """执行 Alpaca 卖出逻辑 (平仓)。"""
+        try:
+            # 1. 获取当前持仓
+            current_position = self._get_current_position(ticker)
+            
+            if not current_position or float(current_position.qty) <= 0:
+                print(f"  ⚠️ Alpaca SELL 失败：{ticker} 无持仓可平。")
+                return False
 
-    print("--- 启动 Alpaca 模拟交易执行器 ---")
+            # 2. 提交平仓请求 (ClosePositionRequest 将卖出全部持仓)
+            close_request = ClosePositionRequest(
+                symbol=ticker
+            )
+            # close_position API 会返回一个 Order 对象
+            order = self.trading_client.close_position(close_request)
+            
+            qty_to_sell = float(current_position.qty) # 记录平仓数量
+            
+            self.trade_log.append({
+                'time': datetime.now(), 'type': 'SELL', 'qty': qty_to_sell,
+                'price': float(current_position.current_price), 'fee': 0.0, 'net_pnl': 0.0, 
+                'current_pos': 0.0, 'order_id': order.id, 'status': order.status.value
+            })
 
-    # 检查账户是否可用
-    account = trading_client.get_account()
-    if account.status != 'ACTIVE':
-        print(f"🔴 账户状态不可用: {account.status}")
-    else:
-        print(f"🟢 账户状态活跃。当前可用现金: ${float(account.cash):.2f}")
+            print(f"  🌟 Alpaca 订单提交成功: 平仓 {qty_to_sell:,.0f} 股 {ticker}。订单状态: {order.status.value}")
+            return True
 
-        # 执行 TSLA 的交易逻辑
-        execute_trading_signal(ticker="COST")
-
-        print("\n--- 执行完成 ---")
+        except APIError as e:
+            print(f"  ❌ Alpaca API 错误 (SELL): {e}")
+            return False
+        except Exception as e:
+            print(f"  ❌ 交易执行失败 (SELL): {e}")
+            return False
+            
+    def get_trade_log(self) -> pd.DataFrame:
+        """返回交易日志 DataFrame。在实盘模式中，这只记录尝试提交的订单。"""
+        return pd.DataFrame(self.trade_log)
