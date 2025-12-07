@@ -8,6 +8,9 @@ import pandas as pd
 import os
 from dotenv import load_dotenv
 
+# 导入 AlpacaDataFetcher 类
+from src.data.alpaca_data_fetcher import AlpacaDataFetcher 
+
 load_dotenv() # 确保加载了 .env 文件中的 Alpaca API 密钥
 
 ## --- 1. 财务参数设置（供 SimulationExecutor 使用） ---
@@ -37,11 +40,17 @@ IS_BACKTEST_MODE = True
 # 如果使用 AlpacaExecutor，可以选择是否使用 paper 账户
 ALPACA_PAPER_MODE = True
 
+# --- 3. 实例化数据获取器（全局使用） ---
+# 实例化 DataFetcher，用于获取实时价格
+data_fetcher = AlpacaDataFetcher()
+
 
 if __name__ == '__main__':
     # ----------------------------------------------------
     # 模式选择和执行器初始化
     # ----------------------------------------------------
+    TICKER = "TSLA"
+    
     if IS_BACKTEST_MODE:
         print("💡 模式选择: 回测模拟 (SimulationExecutor)")
         # 使用 SimulationExecutor 进行回测
@@ -71,9 +80,11 @@ if __name__ == '__main__':
         # 仅测试一次，所以结束时间设为开始时间，backtest_arbitrary_period 会处理边界条件
         END_DATE = START_DATE 
         
+        # **更新：使用 data_fetcher 实例获取最新价格**
+        current_price = data_fetcher.get_latest_price(TICKER)
+        
         # 获取 Alpaca 账户的初始权益作为 P&L 计算基准
-        # 注意：这里需要 API 调用来获取实时权益
-        initial_status = executor.get_account_status(current_price=0.0) 
+        initial_status = executor.get_account_status(current_price=current_price) 
         initial_capital = initial_status.get('equity', 0.0)
         STEP_MINUTES = 1 # 实时交易可以更频繁
 
@@ -84,8 +95,6 @@ if __name__ == '__main__':
     cache = TradingCache()
     initial_cache_size = len(cache) # 记录初始缓存大小
     
-    TICKER = "TSLA"
-
     # 执行回测或实时运行
     # backtest_arbitrary_period 现在接受一个 executor 实例
     all_signals, trade_log_df, final_equity = backtest_arbitrary_period(
@@ -94,6 +103,7 @@ if __name__ == '__main__':
         start_dt=START_DATE,
         end_dt=END_DATE,
         executor=executor,  # 传入执行器实例
+        data_fetcher=data_fetcher, # <--- 新增：传入数据获取器实例
         step_minutes=STEP_MINUTES,
         is_live_run=not IS_BACKTEST_MODE, 
     )
@@ -133,5 +143,9 @@ if __name__ == '__main__':
 
     # 最终状态
     # 在这里传入 0.0 作为 price 是因为我们只关心现金和持仓股数，最终权益已在上一步计算
-    final_status = executor.get_account_status(current_price=0.0) 
+    # **更新：实时模式下，应传入最新的价格，但回测模式下价格是历史数据，
+    # 故对于 SimulationExecutor，0.0 是安全的。对于 AlpacaExecutor，我们使用前面获取的 current_price。
+    # 注意：这里的 current_price 是回测循环结束时的价格，用于最终状态的估算。
+    final_price = data_fetcher.get_latest_price(TICKER) if not IS_BACKTEST_MODE else 0.0
+    final_status = executor.get_account_status(current_price=final_price) 
     print(f"\n最终持仓概览: 现金 ${final_status['cash']:,.2f} | 剩余持仓 {final_status['position']:,.0f} 股")

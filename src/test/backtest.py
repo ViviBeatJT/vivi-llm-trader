@@ -4,14 +4,16 @@ from datetime import datetime, timezone, timedelta
 from src.cache.trading_cache import TradingCache # 导入 TradingCache 类
 from src.strategies.mean_reversion_strategy import get_mean_reversion_signal
 from src.executor.base_executor import BaseExecutor
-from src.data.alpaca_data_fetcher import get_latest_price # 导入实时价格获取函数
+from src.data.alpaca_data_fetcher import AlpacaDataFetcher # 导入 AlpacaDataFetcher 类
 from typing import Optional
+import pandas as pd # 确保导入 pandas
 
 def backtest_arbitrary_period(cache: TradingCache, # 更改参数类型为 TradingCache
                               ticker: str,
                               start_dt: datetime,
                               end_dt: datetime,
                               executor: BaseExecutor,
+                              data_fetcher: AlpacaDataFetcher, # 新增参数：数据获取器实例
                               step_minutes: int = 5,
                               is_live_run: bool = False, # 新增参数：是否为实时运行模式
                               delay_seconds: int = 15):
@@ -25,6 +27,7 @@ def backtest_arbitrary_period(cache: TradingCache, # 更改参数类型为 Tradi
         start_dt: 运行的起始时间。
         end_dt: 运行的结束时间。
         executor: 交易执行器实例 (SimulationExecutor 或 AlpacaExecutor)。
+        data_fetcher: AlpacaDataFetcher 实例，用于获取实时价格。
         step_minutes: 每次循环的时间步长（分钟）。
         is_live_run: 如果为 True，则调用 Alpaca API 获取实时价格。
         delay_seconds: 每次 LLM 调用后的延迟时间，用于遵守速率限制。
@@ -34,7 +37,7 @@ def backtest_arbitrary_period(cache: TradingCache, # 更改参数类型为 Tradi
     # 确保起始时间小于等于结束时间
     if start_dt >= end_dt and not is_live_run:
         print("❌ 错误：起始时间必须早于结束时间（回测模式）。")
-        # 依赖 pandas 导入，这里暂时使用空列表/0.0
+        # 返回空的 results, None 日志, 和当前的 equity
         return results, None, executor.get_account_status(0.0)['equity'] 
 
     # 确保时间对象带有 UTC 时区信息
@@ -54,24 +57,26 @@ def backtest_arbitrary_period(cache: TradingCache, # 更改参数类型为 Tradi
     print(f"步长: {step_minutes} 分钟")
     print("-" * 30)
 
+    # 确保 current_price 在循环开始前有值
+    current_price = 0.0
+
     while current_time <= end_dt or is_live_run:
         if is_live_run:
             # 实时模式下，使用当前时间作为策略分析时间点
             time_for_signal = datetime.now(timezone.utc).astimezone(timezone.utc)
-            # 实时获取最新价格
-            current_price = get_latest_price(ticker)
+            # **更新：使用 data_fetcher 实例调用 get_latest_price**
+            current_price = data_fetcher.get_latest_price(ticker) 
         else:
             # 回测模式下，使用循环时间
             time_for_signal = current_time
-            
-            # 回测模式下，假设价格数据存储在缓存中，通过时间戳查找
-            # 注意：这里需要一个机制来从缓存中获取当前时间点的价格
-            current_price = 0.0 # 稍后从信号结果中更新
+            # 回测模式下，初始价格为 0.0，策略函数会返回对应时间点的收盘价
+            current_price = 0.0 
             
         print(f"--- 📊 正在处理时间点: {time_for_signal.strftime('%Y-%m-%d %H:%M UTC')} ---")
         
         # 1. 策略调用（获取信号）
         # time_for_signal 决定了 LLM 分析的 K线数据的结束时间点
+        # get_mean_reversion_signal 函数返回 (signal_result, latest_price)
         signal_result, current_price = get_mean_reversion_signal(
             cache, ticker, time_for_signal, lookback_minutes=60, delay_seconds=delay_seconds) # lookback_minutes 默认值 60
         
@@ -79,8 +84,6 @@ def backtest_arbitrary_period(cache: TradingCache, # 更改参数类型为 Tradi
         confidence = signal_result.get('confidence_score', 0)
         reason = signal_result.get('reason', 'N/A')
 
-        # 尝试从信号结果中提取价格 (仅用于回测模式的近似价格)
-        # 策略函数已确保返回了最新的收盘价，因此不需要额外的 price 提取逻辑
         if current_price <= 0.0:
             print("⚠️ 价格无效，跳过本周期。")
         elif signal in ["BUY", "SELL"]:
@@ -128,8 +131,7 @@ def backtest_arbitrary_period(cache: TradingCache, # 更改参数类型为 Tradi
     trade_log_df = executor.get_trade_log() # 从 Executor 获取交易日志
 
     print("\n--- ✅ 运行完成。结果总结 ---")
-    # ... (后继打印逻辑保持不变)
-
+    
     # 打印格式化后的结果 (保持总结逻辑不变)
     total_signals = len(results)
     buy_count = sum(1 for r in results if r['signal'] == 'BUY')
@@ -139,17 +141,10 @@ def backtest_arbitrary_period(cache: TradingCache, # 更改参数类型为 Tradi
     print(f"买入信号 (BUY): {buy_count} 次")
     print(f"卖出信号 (SELL): {sell_count} 次")
     print("-" * 30)
-
-    # 如果有新的缓存条目，保存缓存
-    # if len(cache.data) > initial_cache_size: # 假设 TradingCache 在构造时知道其初始大小
-    # 我们可以选择在这里保存，或者依赖 backtest_runner 统一保存。
     
     return results, trade_log_df, final_equity
 
 
 if __name__ == '__main__':
-    # ----------------------------------------------------\n
-    # 示例运行 (如果需要一个单独的测试入口)
-    # ----------------------------------------------------\n
     # 运行此文件需要 SimulationExecutor 的定义，此处仅保留函数定义
     print("请通过 backtest_runner.py 运行完整的交易系统。")

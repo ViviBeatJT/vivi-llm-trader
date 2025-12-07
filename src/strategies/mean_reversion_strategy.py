@@ -11,8 +11,8 @@ import hashlib  # 用于生成唯一的缓存键
 from src.cache.trading_cache import TradingCache 
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 
-# 导入 Alpaca 数据获取函数
-from src.data.alpaca_data_fetcher import get_latest_bars
+# 导入 Alpaca 数据获取类
+from src.data.alpaca_data_fetcher import AlpacaDataFetcher 
 from google import genai
 import time
 
@@ -22,9 +22,10 @@ client = genai.Client()
 
 GEMINI_MODEL = "gemini-2.5-flash-lite"
 
+# --- 新增：实例化 AlpacaDataFetcher ---
+data_fetcher = AlpacaDataFetcher()
+
 # 定义 LLM 输出结构 (不变)
-
-
 class TradingSignal(BaseModel):
     """交易信号模型"""
     signal: Literal["BUY", "SELL", "HOLD"] = Field(
@@ -55,8 +56,8 @@ def get_mean_reversion_signal(cache: TradingCache, # 更改参数类型为 Tradi
     """
 
     # 1. 获取 K 线数据 (包含 BB 和 RSI)
-    # get_latest_bars 现在返回 (格式化文本, DataFrame)
-    kline_data_text, df_bars = get_latest_bars(
+    # **更改：使用 data_fetcher 实例的 get_latest_bars 方法**
+    kline_data_text, df_bars = data_fetcher.get_latest_bars(
         ticker=ticker, lookback_minutes=lookback_minutes, timeframe=timeframe, end_dt=end_dt)
 
     if df_bars.empty or kline_data_text == "没有找到可用的 K 线数据。":
@@ -90,9 +91,13 @@ def get_mean_reversion_signal(cache: TradingCache, # 更改参数类型为 Tradi
     time.sleep(delay_seconds)
 
     try:
+        # 由于 SYSTEM_PROMPT 包含中文，我们将其作为唯一内容项传递
         response = client.models.generate_content(
             model=GEMINI_MODEL,
-            contents=[SYSTEM_PROMPT, user_prompt],
+            contents=[
+                {"role": "user", "parts": [{"text": SYSTEM_PROMPT}]},
+                {"role": "user", "parts": [{"text": user_prompt}]}
+            ],
             config=genai.types.GenerateContentConfig(
                 response_mime_type="application/json",
                 response_schema=TradingSignal,
@@ -100,14 +105,15 @@ def get_mean_reversion_signal(cache: TradingCache, # 更改参数类型为 Tradi
             )
         )
 
+        # 检查 response.text 是否存在且不为空
+        if not response.text:
+             raise Exception("Gemini API 返回了空响应文本。")
+
         signal_result = json.loads(response.text)
 
-        # 5. 将结果存入缓存并保存文件
+        # 5. 将结果存入缓存
         # 使用 cache.add() 添加缓存
         cache.add(cache_key, signal_result) 
-        # Note: 缓存保存现在由 backtest_runner 在运行结束后统一调用。
-        # 如果需要立即保存，可以在这里调用 cache.save()
-        # 但为避免频繁 I/O，我们依赖统一的保存机制。
 
         # 返回信号结果和当前价格
         return signal_result, current_price
