@@ -19,6 +19,7 @@ load_dotenv()
 client = genai.Client()
 
 CACHE_FILE = 'gemini_cache.json'
+GEMINI_MODEL="gemini-2.5-flash-lite"
 
 
 def load_cache():
@@ -115,7 +116,7 @@ def get_mean_reversion_signal(ticker: str = "TSLA", lookback_minutes: int = 60, 
 
     try:
         response = client.models.generate_content(
-            model='gemini-2.5-flash',
+            model=GEMINI_MODEL,
             contents=[SYSTEM_PROMPT, user_prompt],
             config=genai.types.GenerateContentConfig(
                 response_mime_type="application/json",

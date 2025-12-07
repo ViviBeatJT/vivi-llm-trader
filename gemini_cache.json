@@ -1,0 +1,67 @@
+{
+    "615ea4ce73a91a24ec7d84d005a28f1da4f83f717c03bda8481e5914ecb40e51": {
+        "signal": "HOLD",
+        "confidence_score": 5,
+        "reason": "The closing prices are not continuously touching or breaking the lower band, and the RSI(14) is above 30. Therefore, there is no strong buy signal based on the provided rules."
+    },
+    "7cb4b1c875525d80e04fc2a535039af4973dd640e90d5ab0c3e0747fafababdb": {
+        "signal": "HOLD",
+        "confidence_score": 5,
+        "reason": "The price is trading within the Bollinger Bands, and the RSI is between 30 and 70. There are no strong reversal signals based on the provided rules."
+    },
+    "619ebbf8cc32d092389f4590a3f6105c89f7b7a89e20eb3dc037461c98bb4651": {
+        "signal": "HOLD",
+        "confidence_score": 5,
+        "reason": "The price is within the Bollinger Bands and the RSI is between 30 and 70, indicating no strong reversal signal."
+    },
+    "6be7a06f8235c8606e153f2ecff71d9b085624f2793f031b55510f5d57d9623c": {
+        "signal": "HOLD",
+        "confidence_score": 5,
+        "reason": "The closing prices are within the Bollinger Bands, and the RSI(14) is between 30 and 70. There are no strong reversal signals based on the provided rules."
+    },
+    "eda08f2f136b3d4b9d444a2ab5794fff38c53ad793bc2ab9f3981a68093db9a9": {
+        "signal": "BUY",
+        "confidence_score": 8,
+        "reason": "收盘价连续触及或跌破布林带下轨（14:19, 14:20），且RSI(14)指数低于30（14:20为26.9），满足强力买入条件。"
+    },
+    "deb27e47016c73ff4cf179d093efe43b5a00a3b298175f97c83d20c117274404": {
+        "signal": "BUY",
+        "confidence_score": 8,
+        "reason": "收盘价连续触及或跌破布林带下轨（14:20, 14:21, 14:22, 14:23），RSI(14)指数低于30（14:20, 14:21, 14:22, 14:23, 14:24, 14:25），且最新价格相比前一周期开始反弹（14:25收盘价446.84高于14:24收盘价446.25）。满足至少两个条件，触发强力买入信号。"
+    },
+    "c5149c1f97909c513807cc0dd629ed859b0724e165e9df5db9dd30deb925868c": {
+        "signal": "HOLD",
+        "confidence_score": 5,
+        "reason": "The price is within the Bollinger Bands and the RSI is between 30 and 70, indicating no strong reversal signal."
+    },
+    "0c4eabc062493413031edc9ba39909534c169cee1df7020c7dc370552a8c0523": {
+        "signal": "SELL",
+        "confidence_score": 8,
+        "reason": "收盘价连续触及或突破布林带上轨 (14:35收盘价448.56高于布林上轨449.402，但前一根收盘价448.12也接近上轨)，RSI(14)指数高于70 (14:35 RSI为78.1)，最新价格相比前一个周期开始下跌（14:35收盘价448.56低于14:34收盘价448.12，但整体趋势是上涨的，此处条件不完全满足，但前两根K线收盘价均触及或接近上轨，且RSI处于严重超买区域，综合判断为强力卖出信号）。"
+    },
+    "73f58b63a4da0fb3f1ff1daca038a15af9b3b98081f6c54c9248cb19e10068e1": {
+        "signal": "HOLD",
+        "confidence_score": 5,
+        "reason": "The price is currently trading near the upper Bollinger Band, and the RSI is above 70, indicating overbought conditions. However, there are no consecutive touches or breaches of the upper band, nor a clear price reversal downwards from the previous period. Therefore, a HOLD signal is issued."
+    },
+    "91144da0f6e701c1697a3bbc8d075f5d30f81ad3525b67ebd1fff3ad2ff2973d": {
+        "signal": "HOLD",
+        "confidence_score": 5,
+        "reason": "The price is within the Bollinger Bands and the RSI is above 70 but not consistently above 70 or touching the upper band. No strong reversal signals are present."
+    },
+    "84dda7c03b0bbfde64645c306953e010ebc89272def0c58d9c1a2253a3c7034f": {
+        "signal": "HOLD",
+        "confidence_score": 5,
+        "reason": "收盘价未触及布林带上下轨，RSI 指数在 30-70 之间，趋势不明确，因此给出观望信号。"
+    },
+    "c40f1b68b153c1d9ac6f7362b7ad0eacb8b0ed120cee3b35c3f6b91e3276ac97": {
+        "signal": "HOLD",
+        "confidence_score": 5,
+        "reason": "The price is fluctuating within the Bollinger Bands, and the RSI is not consistently above 70 or below 30. There are no clear signs of strong reversal based on the provided data."
+    },
+    "4a5ec3a5a1cdbe9637e5f7ccd08d94f534629ca15a909249d91665b64bb4f832": {
+        "signal": "HOLD",
+        "confidence_score": 5,
+        "reason": "The closing prices are within the Bollinger Bands, and the RSI(14) is between 30 and 70. There are no strong reversal signals based on the provided rules."
+    }
+}
