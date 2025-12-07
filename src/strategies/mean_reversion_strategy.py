@@ -1,11 +1,13 @@
 # src/strategies/mean_reversion_strategy.py
 
 import json
+import os # 用于文件操作
 from google import genai
 from pydantic import BaseModel, Field
 from typing import Literal
 from dotenv import load_dotenv
 from datetime import datetime, timezone, timedelta
+import hashlib # 用于生成唯一的缓存键
 
 # 导入 Alpaca 数据获取函数 (假设已修复 TimeFrame 导入问题)
 from src.data.alpaca_data_fetcher import get_latest_bars
@@ -15,6 +17,26 @@ import time  # 新增：用于暂停执行
 # 初始化 Gemini 客户端
 load_dotenv()
 client = genai.Client()
+
+CACHE_FILE = 'gemini_cache.json'
+
+
+def load_cache():
+    """从本地文件加载 Gemini 响应缓存。"""
+    if os.path.exists(CACHE_FILE):
+        with open(CACHE_FILE, 'r', encoding='utf-8') as f:
+            try:
+                return json.load(f)
+            except json.JSONDecodeError:
+                # 文件损坏时返回空字典
+                return {}
+    return {}
+
+
+def save_cache(cache_data):
+    """将 Gemini 响应缓存保存到本地文件。"""
+    with open(CACHE_FILE, 'w', encoding='utf-8') as f:
+        json.dump(cache_data, f, indent=4, ensure_ascii=False)
 
 # 定义 LLM 输出结构 (沿用之前的情绪信号)
 
@@ -49,7 +71,7 @@ SYSTEM_PROMPT = (
 )
 
 
-def get_mean_reversion_signal(ticker: str = "TSLA", lookback_minutes: int = 60, end_dt: datetime = None) -> dict:
+def get_mean_reversion_signal(ticker: str = "TSLA", lookback_minutes: int = 60, end_dt: datetime = None, delay_seconds: int = 15) -> dict:
     """
     获取 K 线数据，计算布林带，并让 Gemini 给出区间反转信号。
     """
@@ -70,7 +92,27 @@ def get_mean_reversion_signal(ticker: str = "TSLA", lookback_minutes: int = 60, 
         f"K 线数据表:\n{kline_data_text}"
     )
 
-    # 3. 调用 Gemini API
+    # --- 缓存逻辑开始 ---
+    # 3. 生成唯一的缓存键 (基于 ticker, timestamp, 和 prompt 的 SHA256 哈希值)
+    # 我们将时间戳和 prompt 结合起来
+    cache_key_input = f"{ticker}|{end_dt}|{user_prompt}"
+    cache_key = hashlib.sha256(cache_key_input.encode('utf-8')).hexdigest()
+
+    # 4. 尝试加载缓存
+    cache = load_cache()
+
+    if cache_key in cache:
+        print(f"✅ 缓存命中！返回 {end_dt.strftime('%Y-%m-%d %H:%M UTC')} 的缓存结果。")
+        return cache[cache_key]
+
+    print(f"--- 缓存未命中。正在调用 Gemini 2.5 Flash 分析 {ticker} 的布林带模式... ---")
+    # --- 缓存逻辑结束 ---
+
+    # 5. 调用 Gemini API (如果缓存未命中)
+    # 只有当后面还有时间点需要测试时才暂停
+    print(f"⏸️ 暂停 {delay_seconds} 秒以遵守 Gemini API 速率限制...")
+    time.sleep(delay_seconds)
+
     try:
         response = client.models.generate_content(
             model='gemini-2.5-flash',
@@ -82,7 +124,13 @@ def get_mean_reversion_signal(ticker: str = "TSLA", lookback_minutes: int = 60, 
             )
         )
 
-        return json.loads(response.text)
+        signal_result = json.loads(response.text)
+
+        # 6. 将结果存入缓存并保存文件
+        cache[cache_key] = signal_result
+        save_cache(cache)
+
+        return signal_result
 
     except Exception as e:
         print(f"调用 Gemini API 发生错误: {e}")
@@ -126,17 +174,13 @@ def backtest_arbitrary_period(ticker: str, start_dt: datetime, end_dt: datetime,
     time_step = timedelta(minutes=step_minutes)
 
     while current_time <= end_dt:
-        # 只有当后面还有时间点需要测试时才暂停
-        print(f"⏸️ 暂停 {delay_seconds} 秒以遵守 Gemini API 速率限制...")
-        time.sleep(delay_seconds)
-
         print(
             f"\n[TIME: {current_time.strftime('%Y-%m-%d %H:%M UTC')}] 正在获取信号...")
 
         # 调用核心策略函数，使用当前时间点作为数据结束时间
         # lookback_minutes 参数在 get_mean_reversion_signal 内部调用 get_latest_bars 时使用
         signal_result = get_mean_reversion_signal(
-            ticker=ticker, end_dt=current_time)
+            ticker=ticker, end_dt=current_time, delay_seconds=delay_seconds)
 
         # 记录结果
         results.append({
