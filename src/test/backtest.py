@@ -1,13 +1,13 @@
 # src/test/backtest.py
 
 from datetime import datetime, timezone, timedelta
-from src.cache.trading_cache import load_cache, save_cache
+from src.cache.trading_cache import TradingCache # 导入 TradingCache 类
 from src.strategies.mean_reversion_strategy import get_mean_reversion_signal
 from src.executor.base_executor import BaseExecutor
 from src.data.alpaca_data_fetcher import get_latest_price # 导入实时价格获取函数
 from typing import Optional
 
-def backtest_arbitrary_period(cache: dict,
+def backtest_arbitrary_period(cache: TradingCache, # 更改参数类型为 TradingCache
                               ticker: str,
                               start_dt: datetime,
                               end_dt: datetime,
@@ -20,7 +20,7 @@ def backtest_arbitrary_period(cache: dict,
     在回测模式下，使用时间戳模拟历史数据；在实时模式下，获取实时价格。
 
     Args:
-        cache: Gemini 响应缓存。
+        cache: Gemini 响应缓存 (TradingCache 实例)。
         ticker: 股票代码。
         start_dt: 运行的起始时间。
         end_dt: 运行的结束时间。
@@ -34,7 +34,8 @@ def backtest_arbitrary_period(cache: dict,
     # 确保起始时间小于等于结束时间
     if start_dt >= end_dt and not is_live_run:
         print("❌ 错误：起始时间必须早于结束时间（回测模式）。")
-        return results, pd.DataFrame(), executor.get_account_status(0.0)['equity']
+        # 依赖 pandas 导入，这里暂时使用空列表/0.0
+        return results, None, executor.get_account_status(0.0)['equity'] 
 
     # 确保时间对象带有 UTC 时区信息
     if start_dt.tzinfo is None:
@@ -65,7 +66,6 @@ def backtest_arbitrary_period(cache: dict,
             
             # 回测模式下，假设价格数据存储在缓存中，通过时间戳查找
             # 注意：这里需要一个机制来从缓存中获取当前时间点的价格
-            # 简单回测场景：直接从 LLM 调用的 K线数据中提取最后一个收盘价（近似处理）
             current_price = 0.0 # 稍后从信号结果中更新
             
         print(f"--- 📊 正在处理时间点: {time_for_signal.strftime('%Y-%m-%d %H:%M UTC')} ---")
@@ -73,23 +73,14 @@ def backtest_arbitrary_period(cache: dict,
         # 1. 策略调用（获取信号）
         # time_for_signal 决定了 LLM 分析的 K线数据的结束时间点
         signal_result, current_price = get_mean_reversion_signal(
-            cache, ticker, time_for_signal, delay_seconds)
+            cache, ticker, time_for_signal, lookback_minutes=60, delay_seconds=delay_seconds) # lookback_minutes 默认值 60
         
         signal = signal_result.get('signal')
         confidence = signal_result.get('confidence_score', 0)
         reason = signal_result.get('reason', 'N/A')
 
         # 尝试从信号结果中提取价格 (仅用于回测模式的近似价格)
-        if not is_live_run and 'price' in signal_result:
-             # 假设 LLM 结果中可以包含当前收盘价
-             current_price = signal_result.get('price', 0.0) 
-        elif not is_live_run:
-             # 如果是回测模式，并且没有价格，则跳过
-             # 实际项目中，这里应该从历史数据中精确查找
-             print("⚠️ 回测模式下，无法从信号结果中获取当前价格。跳过本周期。")
-             current_time += time_step
-             continue
-
+        # 策略函数已确保返回了最新的收盘价，因此不需要额外的 price 提取逻辑
         if current_price <= 0.0:
             print("⚠️ 价格无效，跳过本周期。")
         elif signal in ["BUY", "SELL"]:
@@ -149,6 +140,10 @@ def backtest_arbitrary_period(cache: dict,
     print(f"卖出信号 (SELL): {sell_count} 次")
     print("-" * 30)
 
+    # 如果有新的缓存条目，保存缓存
+    # if len(cache.data) > initial_cache_size: # 假设 TradingCache 在构造时知道其初始大小
+    # 我们可以选择在这里保存，或者依赖 backtest_runner 统一保存。
+    
     return results, trade_log_df, final_equity
 
 

@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
-from src.cache.trading_cache import load_cache
+# 导入 TradingCache 类
+from src.cache.trading_cache import TradingCache 
 from src.test.backtest import backtest_arbitrary_period
 from src.executor.simulation_executor import SimulationExecutor # 模拟执行器（仓位管理）
 from src.executor.alpaca_trade_executor import AlpacaExecutor # 实盘/纸盘执行器
@@ -79,7 +80,10 @@ if __name__ == '__main__':
     # ----------------------------------------------------
     # 设置回测/运行参数
     # ----------------------------------------------------\
-    cache = load_cache()
+    # 初始化 TradingCache 实例
+    cache = TradingCache()
+    initial_cache_size = len(cache) # 记录初始缓存大小
+    
     TICKER = "TSLA"
 
     # 执行回测或实时运行
@@ -93,6 +97,16 @@ if __name__ == '__main__':
         step_minutes=STEP_MINUTES,
         is_live_run=not IS_BACKTEST_MODE, 
     )
+    
+    # ----------------------------------------------------
+    # 缓存保存逻辑
+    # ----------------------------------------------------
+    # 只有当缓存中有新数据时才保存，避免不必要的 I/O
+    if len(cache) > initial_cache_size:
+        print(f"\n--- 💾 发现 {len(cache) - initial_cache_size} 个新缓存条目。正在保存... ---")
+        cache.save()
+    else:
+        print("\n--- 📝 未发现新缓存条目，跳过文件保存。 ---")
 
     # ----------------------------------------------------
     # 结果打印与总结

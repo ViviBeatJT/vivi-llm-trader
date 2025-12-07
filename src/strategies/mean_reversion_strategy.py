@@ -7,7 +7,8 @@ from typing import Literal
 from dotenv import load_dotenv
 from datetime import datetime, timezone
 import hashlib  # 用于生成唯一的缓存键
-from src.cache.trading_cache import load_cache, save_cache
+# 导入 TradingCache 类
+from src.cache.trading_cache import TradingCache 
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 
 # 导入 Alpaca 数据获取函数
@@ -40,7 +41,12 @@ SYSTEM_PROMPT = (
 )
 
 
-def get_mean_reversion_signal(cache: dict, ticker: str, end_dt: datetime, lookback_minutes: int, timeframe: TimeFrame = TimeFrame(5, TimeFrameUnit.Minute), delay_seconds: int = 15):
+def get_mean_reversion_signal(cache: TradingCache, # 更改参数类型为 TradingCache
+                              ticker: str, 
+                              end_dt: datetime, 
+                              lookback_minutes: int, 
+                              timeframe: TimeFrame = TimeFrame(5, TimeFrameUnit.Minute), 
+                              delay_seconds: int = 15):
     """
     获取指定时间点的均值回归策略信号。
 
@@ -64,14 +70,17 @@ def get_mean_reversion_signal(cache: dict, ticker: str, end_dt: datetime, lookba
 
     user_prompt = f"请分析 {ticker} 截止到 {end_dt.strftime('%Y-%m-%d %H:%M UTC')} 的 K线数据:\n\n{kline_data_text}"
 
-    # 2. 缓存检查 (不变)
+    # 2. 缓存检查
     cache_key_input = f"{ticker}|{end_dt}|{user_prompt}"
     cache_key = hashlib.sha256(cache_key_input.encode('utf-8')).hexdigest()
 
-    if cache_key in cache:
+    # 使用 cache.get() 检查缓存
+    signal_result = cache.get(cache_key)
+    
+    if signal_result:
         print(f"✅ 缓存命中！返回 {end_dt.strftime('%Y-%m-%d %H:%M UTC')} 的缓存结果。")
         # 返回缓存结果和当前价格
-        return cache[cache_key], current_price
+        return signal_result, current_price
 
     print(f"--- 缓存未命中。正在调用 Gemini 2.5 Flash 分析 {ticker} 的布林带模式... ---")
     # --- 缓存逻辑结束 ---
@@ -94,7 +103,11 @@ def get_mean_reversion_signal(cache: dict, ticker: str, end_dt: datetime, lookba
         signal_result = json.loads(response.text)
 
         # 5. 将结果存入缓存并保存文件
-        cache[cache_key] = signal_result
+        # 使用 cache.add() 添加缓存
+        cache.add(cache_key, signal_result) 
+        # Note: 缓存保存现在由 backtest_runner 在运行结束后统一调用。
+        # 如果需要立即保存，可以在这里调用 cache.save()
+        # 但为避免频繁 I/O，我们依赖统一的保存机制。
 
         # 返回信号结果和当前价格
         return signal_result, current_price
