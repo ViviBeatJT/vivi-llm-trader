@@ -4,8 +4,13 @@ from datetime import datetime
 import os
 import sys
 
+# 设置路径以确保能找到模块，如果你的项目结构需要
+# 假设源文件位于 'src/executor/'，测试文件位于 'src/unit_tests/'。
+# 修正路径：从 'src/unit_tests' 向上退一级 (..) 到 'src'，然后进入 'executor' 目录。
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'executor')))
+
 # 导入要测试的类 - 使用模块名直接导入
-from src.executor.alpaca_trade_executor import AlpacaExecutor
+from alpaca_trade_executor import AlpacaExecutor
 # 导入 Alpaca 相关的类进行模拟
 from alpaca.trading.enums import OrderSide, TimeInForce
 from alpaca.common.exceptions import APIError
