@@ -18,7 +18,7 @@ load_dotenv()
 
 # --- 交易参数 ---
 MAX_ALLOCATION_RATE = 0.2
-MIN_LOT_SIZE = 1 # Alpaca 允许 fractional share，但我们这里简化为 1 股最小单位。
+MIN_LOT_SIZE = 1  # Alpaca 允许 fractional share，但我们这里简化为 1 股最小单位。
 
 class AlpacaExecutor(BaseExecutor):
     """
@@ -65,7 +65,7 @@ class AlpacaExecutor(BaseExecutor):
         为简化，我们假设市价单立即成交，并返回预期结果。PositionManager 会记录这些预期的交易。
         """
 
-        ticker = "TSLA" # 假设我们只交易 TSLA，实际应用中应该传递 Ticker
+        ticker = "TSLA"  # 假设我们只交易 TSLA，实际应用中应该传递 Ticker
 
         if current_price <= 0:
             return self._fail_result("价格无效。")
@@ -99,6 +99,7 @@ class AlpacaExecutor(BaseExecutor):
             # 2. 计算可用于交易的金额
             capital_to_use = min(current_cash, equity * self.MAX_ALLOCATION_RATE)
             
+            # 检查资金是否充足
             if capital_to_use <= 0:
                 return self._fail_result("资金不足。")
 
@@ -106,6 +107,7 @@ class AlpacaExecutor(BaseExecutor):
             qty_float = capital_to_use / current_price
             qty = np.floor(qty_float / MIN_LOT_SIZE) * MIN_LOT_SIZE
             
+            # 检查数量是否满足最小交易单位
             if qty < MIN_LOT_SIZE:
                 return self._fail_result("计算数量低于最小交易单位。")
 
@@ -142,8 +144,8 @@ class AlpacaExecutor(BaseExecutor):
         """提交 Alpaca 卖出订单 (平仓) 并返回预期结果。"""
         try:
             # 1. 提交平仓请求
-            close_request = ClosePositionRequest(symbol=ticker)
-            order = self.trading_client.close_position(close_request)
+            # FIX: Use the symbol parameter correctly in ClosePositionRequest
+            order = self.trading_client.close_position(ticker)
             
             # **注意: 实际成交数量/价格/费用需要等待订单填充。**
             # 为简化，我们假设卖出全部持仓，费用为 0。
@@ -151,8 +153,8 @@ class AlpacaExecutor(BaseExecutor):
             return {
                 'executed': True,
                 'trade_type': 'SELL',
-                'executed_qty': current_position, # 预期卖出全部
-                'executed_price': 0.0, # 预期价格 (P/L由PositionManager计算，这里给0.0)
+                'executed_qty': current_position,  # 预期卖出全部
+                'executed_price': 0.0,  # 预期价格 (P/L由PositionManager计算，这里给0.0)
                 'fee': 0.0, 
                 'log_message': f"Alpaca 订单 {order.id} 已提交 (平仓 {current_position:,.0f} 股，状态: {order.status.value})"
             }
