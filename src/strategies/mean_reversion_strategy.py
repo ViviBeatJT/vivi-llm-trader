@@ -24,20 +24,30 @@ class TradingSignal(BaseModel):
 
 # 定义 LLM 系统指令
 SYSTEM_PROMPT = (
-    "你是一位专业的量化交易员，专注于区间反转（Mean Reversion）策略。你的任务是分析提供的布林带（Bollinger Bands, BB）K线数据表，"
+    "你是一位专业的量化交易员，专注于区间反转（Mean Reversion）策略。你的任务是分析提供的包含布林带（BB）和 RSI 指数（RSI(14)）的 K线数据表，"
     "并严格按照以下区间反转规则给出交易信号："
-    "1. **买入 (BUY):** 当收盘价连续触及或跌破布林带下轨 (Lower Band) 时，且短期有反弹迹象，预期价格将反转回均线 (SMA) 时，给出买入信号。"
-    "2. **卖出 (SELL):** 当收盘价连续触及或突破布林带上轨 (Upper Band) 时，预期价格将反转回均线 (SMA) 时，给出卖出信号。"
-    "3. **观望 (HOLD):** 当价格在布林带内，或趋势不明确，或无法判断反转信号时。"
+    
+    "1. **强力买入 (BUY):** 满足以下至少两个条件时：\n"
+    "   a. 收盘价连续触及或跌破布林带下轨 (Lower Band)。\n"
+    "   b. RSI(14) 指数低于 30 (严重超卖区域)。\n"
+    "   c. 最新价格相比前一个周期开始反弹（收盘价高于前一周期收盘价）。\n"
+    
+    "2. **强力卖出 (SELL):** 满足以下至少两个条件时：\n"
+    "   a. 收盘价连续触及或突破布林带上轨 (Upper Band)。\n"
+    "   b. RSI(14) 指数高于 70 (严重超买区域)。\n"
+    "   c. 最新价格相比前一个周期开始下跌（收盘价低于前一周期收盘价）。\n"
+    
+    "3. **观望 (HOLD):** 当价格在布林带内，或RSI在30-70之间，或趋势不明确时。请务必在强力反转信号出现时才给出 BUY/SELL，否则给出 HOLD。"
+    
     "输出必须是有效的 JSON 格式。"
 )
 
-def get_mean_reversion_signal(end_time: datetime = datetime.now(timezone.utc), ticker: str = "TSLA", lookback_minutes: int = 60) -> dict:
+def get_mean_reversion_signal(ticker: str = "TSLA", lookback_minutes: int = 60, end_dt: datetime = None) -> dict:
     """
     获取 K 线数据，计算布林带，并让 Gemini 给出区间反转信号。
     """
     # 1. 获取和格式化数据 (Data Fetching and Indicator Calculation)
-    kline_data_text = get_latest_bars(ticker=ticker, end_time=end_time, lookback_minutes=lookback_minutes)
+    kline_data_text = get_latest_bars(ticker=ticker, lookback_minutes=lookback_minutes, end_dt=end_dt)
     
     if "没有找到可用的" in kline_data_text:
         print(f"🔴 错误：未能获取 {ticker} 的有效数据。")
@@ -73,7 +83,11 @@ def get_mean_reversion_signal(end_time: datetime = datetime.now(timezone.utc), t
 
 if __name__ == '__main__':
     # 运行测试
-    end_time = datetime(2025, 11, 28, 16, 0, 0, tzinfo=timezone.utc)    
-    signal = get_mean_reversion_signal(end_time, ticker="TSLA")
-    print("\n--- 策略分析结果 ---")
+    test_end_time = datetime(2025, 12, 2, 20, 0, 0, tzinfo=timezone.utc)
+    
+    print(f"\n--- 策略分析结果 (使用历史数据测试: 截止 {test_end_time.strftime('%Y-%m-%d %H:%M UTC')}) ---")
+    
+    # 调用时传入新的 end_dt 参数
+    signal = get_mean_reversion_signal(ticker="TSLA", end_dt=test_end_time)
+    
     print(json.dumps(signal, indent=4, ensure_ascii=False))
