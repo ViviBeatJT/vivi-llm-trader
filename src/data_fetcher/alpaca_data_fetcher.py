@@ -4,7 +4,7 @@ import os
 from dotenv import load_dotenv
 import pandas as pd
 from datetime import datetime, timedelta, timezone
-from typing import Optional, Tuple
+from typing import Optional
 
 # 导入 Alpaca 数据 API 客户端
 from alpaca.data.historical import StockHistoricalDataClient
@@ -12,8 +12,9 @@ from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 from alpaca.data.enums import DataFeed
 
-# 加载环境变量（但不在模块级别读取，避免测试时的问题）
+# 加载环境变量
 load_dotenv()
+
 
 class AlpacaDataFetcher:
     """
@@ -23,8 +24,6 @@ class AlpacaDataFetcher:
 
     def __init__(self):
         """初始化 Alpaca 客户端。"""
-        # 在 __init__ 中读取环境变量，而不是模块级别
-        # 这样测试时可以正确模拟环境变量的变化
         api_key = os.getenv('ALPACA_API_KEY_ID')
         secret_key = os.getenv('ALPACA_SECRET_KEY')
         
@@ -33,6 +32,18 @@ class AlpacaDataFetcher:
             self.data_client = None
         else:
             self.data_client = StockHistoricalDataClient(api_key, secret_key)
+
+    def _format_timestamp(self, dt: Optional[datetime]) -> str:
+        """格式化时间戳用于日志输出。"""
+        if dt is None:
+            return "now"
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.strftime('%Y-%m-%d %H:%M UTC')
+
+    def _format_timeframe(self, timeframe: TimeFrame) -> str:
+        """格式化 timeframe 用于日志输出。"""
+        return f"{timeframe.amount}{timeframe.unit.name[0]}"  # e.g., "5M", "1H", "1D"
 
     def get_latest_bars(self, 
                        ticker: str, 
@@ -63,6 +74,10 @@ class AlpacaDataFetcher:
             end_time = end_dt.astimezone(timezone.utc)
 
         start_time = end_time - timedelta(minutes=lookback_minutes)
+        
+        # 格式化日志信息
+        timestamp_str = self._format_timestamp(end_time)
+        timeframe_str = self._format_timeframe(timeframe)
 
         # 构造请求对象
         request_params = StockBarsRequest(
@@ -70,37 +85,34 @@ class AlpacaDataFetcher:
             timeframe=timeframe,
             start=start_time.isoformat(),
             end=end_time.isoformat(),
-            feed=DataFeed.IEX  # 使用 IEX 数据源
+            feed=DataFeed.IEX
         )
 
         try:
-            # 获取数据 (返回一个 BarSet)
             bar_set = self.data_client.get_stock_bars(request_params)
             df = bar_set.df
         except Exception as e:
-            print(f"❌ 获取 Alpaca 数据失败: {e}")
+            print(f"❌ [{timestamp_str}] 获取 {ticker} 数据失败: {e}")
             return pd.DataFrame()
 
         if df.empty:
-            print(f"⚠️ 未获取到 {ticker} 的数据。")
+            print(f"⚠️ [{timestamp_str}] 未获取到 {ticker} 的 {timeframe_str} K线数据 (回溯 {lookback_minutes} 分钟)")
             return pd.DataFrame()
 
         # 提取单个股票的 DataFrame
         try:
-            # Alpaca 返回的是 MultiIndex (symbol, timestamp)
             ticker_df = df.loc[ticker].copy()
         except KeyError:
-            print(f"⚠️ 在返回数据中找不到 {ticker}。")
+            print(f"⚠️ [{timestamp_str}] 在返回数据中找不到 {ticker}")
             return pd.DataFrame()
 
-        print(f"✅ 成功获取 {ticker} 过去 {lookback_minutes} 分钟的 {timeframe.value} K 线数据 (共 {len(ticker_df)} 条)。")
+        print(f"✅ [{timestamp_str}] 获取 {ticker} {timeframe_str} K线: {len(ticker_df)} 条 (回溯 {lookback_minutes} 分钟)")
         
         return ticker_df
 
     def get_latest_price(self, ticker: str) -> float:
         """
         从 Alpaca 获取标的物的最新收盘价。
-        用于实时/纸盘模式下的交易执行。
         
         Args:
             ticker: 股票代码
@@ -112,9 +124,9 @@ class AlpacaDataFetcher:
             print("❌ Alpaca 客户端未初始化，无法获取实时价格。")
             return 0.0
 
-        # 只获取最近几分钟的数据
         end_time = datetime.now(timezone.utc)
         start_time = end_time - timedelta(minutes=5)
+        timestamp_str = self._format_timestamp(end_time)
 
         request_params = StockBarsRequest(
             symbol_or_symbols=[ticker],
@@ -129,27 +141,35 @@ class AlpacaDataFetcher:
             df = bar_set.df
 
             if df.empty:
-                raise ValueError(f"无法获取 {ticker} 的最新 K 线数据。")
+                raise ValueError(f"无法获取 {ticker} 的最新 K 线数据")
 
-            # 返回最近一个 bar 的收盘价
             latest_price = df.loc[ticker].iloc[-1]['close']
-            print(f"💰 实时价格获取成功: {ticker} 最新收盘价 ${latest_price:.2f}")
+            print(f"💰 [{timestamp_str}] {ticker} 最新价格: ${latest_price:.2f}")
             return latest_price
             
         except Exception as e:
-            print(f"❌ 实时价格获取失败 ({ticker}): {e}")
+            print(f"❌ [{timestamp_str}] 获取 {ticker} 实时价格失败: {e}")
             return 0.0
 
 
 if __name__ == '__main__':
-    # 测试用例：获取最近一小时的 TSLA 数据
+    # 测试用例
     fetcher = AlpacaDataFetcher()
     
+    print("\n--- 测试 get_latest_bars ---")
     df = fetcher.get_latest_bars(ticker="TSLA", lookback_minutes=60)
-    print("\n原始数据示例:")
-    print(df.head(10))
-    print(f"\n数据列: {df.columns.tolist()}")
+    if not df.empty:
+        print(f"数据列: {df.columns.tolist()}")
+        print(df.tail(3))
     
-    # 测试用例：获取实时价格
+    print("\n--- 测试 get_latest_bars (指定时间) ---")
+    historical_time = datetime(2025, 12, 5, 15, 30, 0, tzinfo=timezone.utc)
+    df = fetcher.get_latest_bars(
+        ticker="TSLA", 
+        lookback_minutes=30,
+        timeframe=TimeFrame(5, TimeFrameUnit.Minute),
+        end_dt=historical_time
+    )
+    
+    print("\n--- 测试 get_latest_price ---")
     price = fetcher.get_latest_price(ticker="TSLA")
-    print(f"\nTSLA 最新价格: ${price:.2f}")
