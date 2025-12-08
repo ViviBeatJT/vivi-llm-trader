@@ -12,9 +12,10 @@ from datetime import datetime, timezone
 import pandas as pd
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 
-# 导入数据获取器和缓存
+# 导入数据获取器、缓存和基类
 from src.data_fetcher.alpaca_data_fetcher import AlpacaDataFetcher
 from src.cache.trading_cache import TradingCache
+from src.strategies.base_strategy import BaseStrategy # 导入基类
 
 # 加载环境变量
 load_dotenv()
@@ -39,7 +40,7 @@ class TradingSignal(BaseModel):
     )
 
 
-class GeminiStrategy:
+class GeminiStrategy(BaseStrategy): # 继承 BaseStrategy
     """
     基于 Gemini AI 的交易策略。
     
@@ -93,7 +94,7 @@ class GeminiStrategy:
             temperature: 生成温度（0-1，越低越确定）
             delay_seconds: API 调用间隔（避免速率限制）
         """
-        self.data_fetcher = data_fetcher
+        super().__init__(data_fetcher) # 调用基类构造函数
         self.cache = cache
         self.use_cache = use_cache and cache is not None
         self.system_prompt = system_prompt or self.DEFAULT_SYSTEM_PROMPT
@@ -104,7 +105,7 @@ class GeminiStrategy:
         # 初始化 Gemini 客户端
         try:
             self.client = genai.Client()
-            print(f"✅ GeminiStrategy 初始化成功。")
+            print(f"✅ GeminiStrategy 初始化完成。")
             print(f"   模型: {model}, 温度: {temperature}, 缓存: {'启用' if self.use_cache else '禁用'}")
         except Exception as e:
             print(f"❌ 初始化 Gemini 客户端失败：{e}")
@@ -306,7 +307,6 @@ class GeminiStrategy:
         formatted_data = self._format_data_for_llm(df, ticker)
         
         # 5. 检查缓存
-        timestamp_str = end_dt.isoformat() if end_dt else datetime.now(timezone.utc).isoformat()
         timestamp_for_display = end_dt if end_dt else datetime.now(timezone.utc)
         
         if self.use_cache:
@@ -330,14 +330,15 @@ class GeminiStrategy:
         signal_result = self._call_gemini_api(user_prompt)
         
         # 8. 保存到缓存
-        if self.use_cache and (signal_result['signal'] != 'HOLD' or signal_result['confidence_score'] > 0):
+        if self.use_cache and (signal_result.get('signal') != 'HOLD' or signal_result.get('confidence_score', 0) > 0):
+            # 只有当 signal_result 包含有效信号时才保存
             self.cache.add(cache_key, signal_result)
         
         # 9. 打印信号信息
         print(f"\n🎯 [{timestamp_for_display.strftime('%Y-%m-%d %H:%M UTC')}] {ticker} Gemini 分析:")
         print(f"   价格: ${current_price:.2f}")
-        print(f"   信号: {signal_result['signal']} (置信度: {signal_result['confidence_score']}/10)")
-        print(f"   原因: {signal_result['reason']}")
+        print(f"   信号: {signal_result.get('signal', 'N/A')} (置信度: {signal_result.get('confidence_score', 0)}/10)")
+        print(f"   原因: {signal_result.get('reason', 'N/A')}")
         
         return signal_result, current_price
 
@@ -346,21 +347,69 @@ class GeminiStrategy:
 if __name__ == '__main__':
     from datetime import datetime, timezone
     
-    # 初始化组件
-    fetcher = AlpacaDataFetcher()
-    cache = TradingCache('gemini_test_cache.json')
+    # 需要假设 AlpacaDataFetcher 和 TradingCache 存在
+    class MockDataFetcher:
+        def get_latest_bars(self, ticker, lookback_minutes, timeframe, end_dt):
+            print(f"Mocking data fetch for {ticker}...")
+            # 构造模拟数据，确保有足够的行进行指标计算
+            data = {
+                'open': [100, 101, 99, 98, 97, 96, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110],
+                'high': [101, 102, 100, 99, 98, 97, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111],
+                'low': [99, 100, 98, 97, 96, 95, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109],
+                'close': [100.5, 101.5, 99.5, 98.5, 97.5, 96.5, 95.5, 96.5, 97.5, 98.5, 99.5, 100.5, 101.5, 102.5, 103.5, 104.5, 105.5, 106.5, 107.5, 108.5, 109.5, 110.5],
+                'volume': [1000] * 22
+            }
+            # 创建一个时间索引
+            index = pd.to_datetime(pd.date_range(end=datetime.now(timezone.utc), periods=len(data['close']), freq='5min'), utc=True)
+            return pd.DataFrame(data, index=index)
+        
+    class MockTradingCache:
+        def __init__(self, filename):
+            self.data = {}
+            self.filename = filename
+        def get(self, key):
+            return self.data.get(key)
+        def add(self, key, value):
+            self.data[key] = value
+        def save(self):
+            print(f"Saving mock cache to {self.filename}")
+            
+    fetcher = MockDataFetcher()
+    cache = MockTradingCache('gemini_test_cache.json')
     
+    # 模拟 genai.Client 以避免真正的 API 调用
+    class MockGenaiClient:
+        def __init__(self):
+            class MockModels:
+                def generate_content(self, model, contents, config):
+                    class MockResponse:
+                        def __init__(self, text):
+                            self.text = text
+                    
+                    # 检查 prompt 决定返回 BUY 或 SELL
+                    if "跌破布林带" in contents[1]['parts'][0]['text']:
+                        signal_text = '{"signal": "BUY", "confidence_score": 8, "reason": "价格已触及布林带下轨，且RSI处于超卖区域，预计短期内将反弹。"}'
+                    elif "突破布林带" in contents[1]['parts'][0]['text']:
+                        signal_text = '{"signal": "SELL", "confidence_score": 7, "reason": "价格已突破布林带上轨，出现超买信号，建议获利了结。"}'
+                    else:
+                        signal_text = '{"signal": "HOLD", "confidence_score": 5, "reason": "价格在均线附近盘整，缺乏明确方向。"}'
+                        
+                    return MockResponse(signal_text)
+            self.models = MockModels()
+
+    # 替换实际的 genai.Client
     strategy = GeminiStrategy(
         data_fetcher=fetcher,
         cache=cache,
         use_cache=True,
         temperature=0.2,
-        delay_seconds=2
+        delay_seconds=0 # 移除延迟
     )
+    strategy.client = MockGenaiClient() # 使用 Mock Client
     
     # 测试获取信号
     print("\n" + "="*60)
-    print("测试 GeminiStrategy - AI 驱动的交易决策")
+    print("测试 GeminiStrategy - AI 驱动的交易决策 (使用 Mock)")
     print("="*60)
     
     signal_dict, price = strategy.get_signal(
@@ -370,9 +419,9 @@ if __name__ == '__main__':
     )
     
     print(f"\n最终输出:")
-    print(f"  信号: {signal_dict['signal']}")
-    print(f"  置信度: {signal_dict['confidence_score']}/10")
-    print(f"  原因: {signal_dict['reason']}")
+    print(f"  信号: {signal_dict.get('signal')}")
+    print(f"  置信度: {signal_dict.get('confidence_score')}/10")
+    print(f"  原因: {signal_dict.get('reason')}")
     print(f"  当前价格: ${price:.2f}")
     
     # 保存缓存

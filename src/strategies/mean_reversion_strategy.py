@@ -8,9 +8,11 @@ from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 
 # 导入数据获取器
 from src.data_fetcher.alpaca_data_fetcher import AlpacaDataFetcher
+# 导入基类
+from src.strategies.base_strategy import BaseStrategy
 
 
-class MeanReversionStrategy:
+class MeanReversionStrategy(BaseStrategy):
     """
     均值回归策略类 - 使用纯数学计算，基于布林带和 RSI 指标。
     
@@ -45,15 +47,14 @@ class MeanReversionStrategy:
             rsi_oversold: RSI 超卖阈值
             rsi_overbought: RSI 超买阈值
         """
-        self.data_fetcher = data_fetcher
+        super().__init__(data_fetcher)  # 调用基类构造函数
         self.bb_period = bb_period
         self.bb_std_dev = bb_std_dev
         self.rsi_window = rsi_window
         self.rsi_oversold = rsi_oversold
         self.rsi_overbought = rsi_overbought
         
-        print(f"📊 MeanReversionStrategy 初始化成功。")
-        print(f"   参数: BB({bb_period}, {bb_std_dev}σ), RSI({rsi_window}), "
+        print(f"📊 MeanReversionStrategy 配置参数: BB({bb_period}, {bb_std_dev}σ), RSI({rsi_window}), "
               f"超卖<{rsi_oversold}, 超买>{rsi_overbought}")
     
     def _calculate_bollinger_bands(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -229,9 +230,24 @@ class MeanReversionStrategy:
 # 测试用例
 if __name__ == '__main__':
     from datetime import datetime, timezone
+    # 需要假设 AlpacaDataFetcher 存在于 src.data_fetcher.alpaca_data_fetcher
+    class MockDataFetcher:
+        def get_latest_bars(self, ticker, lookback_minutes, timeframe, end_dt):
+            print(f"Mocking data fetch for {ticker}...")
+            # 构造模拟数据，确保有足够的行进行指标计算
+            data = {
+                'open': [100, 101, 99, 98, 97, 96, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110],
+                'high': [101, 102, 100, 99, 98, 97, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111],
+                'low': [99, 100, 98, 97, 96, 95, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109],
+                'close': [100.5, 101.5, 99.5, 98.5, 97.5, 96.5, 95.5, 96.5, 97.5, 98.5, 99.5, 100.5, 101.5, 102.5, 103.5, 104.5, 105.5, 106.5, 107.5, 108.5, 109.5, 110.5],
+                'volume': [1000] * 22
+            }
+            # 创建一个时间索引
+            index = pd.to_datetime(pd.date_range(end=datetime.now(timezone.utc), periods=len(data['close']), freq='5min'), utc=True)
+            return pd.DataFrame(data, index=index)
+
+    fetcher = MockDataFetcher() # 使用 Mock 替代 AlpacaDataFetcher
     
-    # 初始化数据获取器和策略
-    fetcher = AlpacaDataFetcher()
     strategy = MeanReversionStrategy(
         data_fetcher=fetcher,
         bb_period=20,
