@@ -4,10 +4,7 @@ import pandas as pd
 import numpy as np
 from typing import Literal, Tuple, Dict, Optional
 from datetime import datetime, timezone
-from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 
-# 导入数据获取器
-from src.data_fetcher.alpaca_data_fetcher import AlpacaDataFetcher
 # 导入基类
 from src.strategies.base_strategy import BaseStrategy
 
@@ -15,6 +12,11 @@ from src.strategies.base_strategy import BaseStrategy
 class MeanReversionStrategy(BaseStrategy):
     """
     均值回归策略类 - 使用纯数学计算，基于布林带和 RSI 指标。
+    
+    特点：
+    1. 不依赖 data_fetcher，数据通过参数传入
+    2. 维护历史数据，每次调用时合并新数据
+    3. 纯粹的信号生成器：数据输入 → 信号输出
     
     交易规则：
     1. BUY (买入)：当价格跌破布林带下轨 AND RSI < 30 (超卖)
@@ -28,45 +30,91 @@ class MeanReversionStrategy(BaseStrategy):
     DEFAULT_RSI_WINDOW = 14     # RSI 窗口期
     DEFAULT_RSI_OVERSOLD = 30   # RSI 超卖阈值
     DEFAULT_RSI_OVERBOUGHT = 70 # RSI 超买阈值
+    DEFAULT_MAX_HISTORY_BARS = 500  # 最大保留历史K线数量
     
     def __init__(self, 
-                 data_fetcher: AlpacaDataFetcher,
                  bb_period: int = DEFAULT_BB_PERIOD,
                  bb_std_dev: float = DEFAULT_BB_STD_DEV,
                  rsi_window: int = DEFAULT_RSI_WINDOW,
                  rsi_oversold: float = DEFAULT_RSI_OVERSOLD,
-                 rsi_overbought: float = DEFAULT_RSI_OVERBOUGHT):
+                 rsi_overbought: float = DEFAULT_RSI_OVERBOUGHT,
+                 max_history_bars: int = DEFAULT_MAX_HISTORY_BARS):
         """
         初始化均值回归策略。
         
         Args:
-            data_fetcher: AlpacaDataFetcher 实例
             bb_period: 布林带计算周期
             bb_std_dev: 布林带标准差倍数
             rsi_window: RSI 计算窗口
             rsi_oversold: RSI 超卖阈值
             rsi_overbought: RSI 超买阈值
+            max_history_bars: 最大保留的历史K线数量
         """
-        super().__init__(data_fetcher)  # 调用基类构造函数
         self.bb_period = bb_period
         self.bb_std_dev = bb_std_dev
         self.rsi_window = rsi_window
         self.rsi_oversold = rsi_oversold
         self.rsi_overbought = rsi_overbought
+        self.max_history_bars = max_history_bars
         
-        print(f"📊 MeanReversionStrategy 配置参数: BB({bb_period}, {bb_std_dev}σ), RSI({rsi_window}), "
-              f"超卖<{rsi_oversold}, 超买>{rsi_overbought}")
+        # 历史数据存储：按 ticker 分别存储
+        self._history_data: Dict[str, pd.DataFrame] = {}
+        
+        print(f"📊 MeanReversionStrategy 初始化: BB({bb_period}, {bb_std_dev}σ), RSI({rsi_window}), "
+              f"超卖<{rsi_oversold}, 超买>{rsi_overbought}, 最大历史={max_history_bars}")
     
-    def _calculate_bollinger_bands(self, df: pd.DataFrame) -> pd.DataFrame:
+    def _merge_data(self, ticker: str, new_df: pd.DataFrame) -> pd.DataFrame:
         """
-        计算布林带指标。
+        将新数据与历史数据合并，去除重复项并按时间排序。
         
         Args:
-            df: 包含 'close' 列的 DataFrame
+            ticker: 股票代码
+            new_df: 新获取的 OHLCV DataFrame
             
         Returns:
-            pd.DataFrame: 添加了 SMA, BB_UPPER, BB_LOWER 列的 DataFrame
+            pd.DataFrame: 合并后的 DataFrame
         """
+        if new_df.empty:
+            return self._history_data.get(ticker, pd.DataFrame())
+        
+        if ticker not in self._history_data or self._history_data[ticker].empty:
+            merged_df = new_df.copy()
+        else:
+            history_df = self._history_data[ticker]
+            merged_df = pd.concat([history_df, new_df])
+            merged_df = merged_df[~merged_df.index.duplicated(keep='last')]
+            merged_df = merged_df.sort_index()
+        
+        # 限制历史数据大小
+        if len(merged_df) > self.max_history_bars:
+            merged_df = merged_df.iloc[-self.max_history_bars:]
+        
+        # 更新历史数据存储
+        self._history_data[ticker] = merged_df
+        
+        return merged_df
+    
+    def get_history_data(self, ticker: str) -> pd.DataFrame:
+        """获取指定 ticker 的历史数据副本。"""
+        if ticker in self._history_data:
+            return self._history_data[ticker].copy()
+        return pd.DataFrame()
+    
+    def clear_history(self, ticker: Optional[str] = None):
+        """清除历史数据。如果 ticker 为 None，清除所有。"""
+        if ticker is None:
+            self._history_data.clear()
+            print("🗑️ 已清除所有历史数据。")
+        elif ticker in self._history_data:
+            del self._history_data[ticker]
+            print(f"🗑️ 已清除 {ticker} 的历史数据。")
+    
+    def get_history_size(self, ticker: str) -> int:
+        """获取指定 ticker 的历史数据条数。"""
+        return len(self._history_data.get(ticker, []))
+    
+    def _calculate_bollinger_bands(self, df: pd.DataFrame) -> pd.DataFrame:
+        """计算布林带指标。"""
         df = df.copy()
         df['SMA'] = df['close'].rolling(window=self.bb_period).mean()
         df['STD'] = df['close'].rolling(window=self.bb_period).std()
@@ -75,21 +123,11 @@ class MeanReversionStrategy(BaseStrategy):
         return df
     
     def _calculate_rsi(self, df: pd.DataFrame) -> pd.DataFrame:
-        """
-        计算 RSI (相对强弱指数) 指标。
-        
-        Args:
-            df: 包含 'close' 列的 DataFrame
-            
-        Returns:
-            pd.DataFrame: 添加了 RSI 列的 DataFrame
-        """
+        """计算 RSI 指标。"""
         df = df.copy()
         delta = df['close'].diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=self.rsi_window).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(window=self.rsi_window).mean()
-        
-        # 避免除以零
         RS = gain / loss.replace(0, np.nan)
         df['RSI'] = 100 - (100 / (1 + RS))
         return df
@@ -100,176 +138,157 @@ class MeanReversionStrategy(BaseStrategy):
                                         bb_lower: float,
                                         sma: float,
                                         rsi: float) -> Tuple[Literal["BUY", "SELL", "HOLD"], int, str]:
-        """
-        根据技术指标生成交易信号。
-        
-        Args:
-            latest_close: 最新收盘价
-            bb_upper: 布林带上轨
-            bb_lower: 布林带下轨
-            sma: 简单移动平均线
-            rsi: RSI 指标值
-            
-        Returns:
-            Tuple[signal, confidence, reason]:
-                - signal: "BUY", "SELL", 或 "HOLD"
-                - confidence: 信号置信度 (1-10)
-                - reason: 信号原因说明
-        """
-        # 检查是否有无效数据
+        """根据技术指标生成交易信号。"""
         if pd.isna([latest_close, bb_upper, bb_lower, sma, rsi]).any():
             return "HOLD", 0, "技术指标数据不足，无法计算信号"
         
-        # BUY 信号：价格跌破下轨 AND RSI 超卖
+        # BUY: 价格跌破下轨 AND RSI 超卖
         if latest_close < bb_lower and rsi < self.rsi_oversold:
-            confidence = 9  # 双重确认，高置信度
-            reason = (f"价格 ${latest_close:.2f} 跌破布林带下轨 ${bb_lower:.2f}，"
-                     f"且 RSI={rsi:.1f} < {self.rsi_oversold} (超卖)")
-            return "BUY", confidence, reason
+            return "BUY", 9, (f"价格 ${latest_close:.2f} 跌破布林带下轨 ${bb_lower:.2f}，"
+                             f"且 RSI={rsi:.1f} < {self.rsi_oversold} (超卖)")
         
-        # BUY 信号 (弱)：仅价格跌破下轨
+        # BUY (弱): 仅价格跌破下轨
         elif latest_close < bb_lower:
-            confidence = 6
-            reason = f"价格 ${latest_close:.2f} 跌破布林带下轨 ${bb_lower:.2f}"
-            return "BUY", confidence, reason
+            return "BUY", 6, f"价格 ${latest_close:.2f} 跌破布林带下轨 ${bb_lower:.2f}"
         
-        # SELL 信号：价格突破上轨 OR RSI 超买
+        # SELL: 价格突破上轨 OR RSI 超买
         elif latest_close > bb_upper or rsi > self.rsi_overbought:
-            confidence = 8 if (latest_close > bb_upper and rsi > self.rsi_overbought) else 7
-            
             if latest_close > bb_upper and rsi > self.rsi_overbought:
-                reason = (f"价格 ${latest_close:.2f} 突破布林带上轨 ${bb_upper:.2f}，"
-                         f"且 RSI={rsi:.1f} > {self.rsi_overbought} (超买)")
+                return "SELL", 8, (f"价格 ${latest_close:.2f} 突破布林带上轨 ${bb_upper:.2f}，"
+                                  f"且 RSI={rsi:.1f} > {self.rsi_overbought} (超买)")
             elif latest_close > bb_upper:
-                reason = f"价格 ${latest_close:.2f} 突破布林带上轨 ${bb_upper:.2f}"
+                return "SELL", 7, f"价格 ${latest_close:.2f} 突破布林带上轨 ${bb_upper:.2f}"
             else:
-                reason = f"RSI={rsi:.1f} > {self.rsi_overbought} (超买)"
-            
-            return "SELL", confidence, reason
+                return "SELL", 7, f"RSI={rsi:.1f} > {self.rsi_overbought} (超买)"
         
-        # HOLD 信号：价格在正常区间内
+        # HOLD
         else:
-            confidence = 5
-            reason = (f"价格 ${latest_close:.2f} 在布林带区间内 "
-                     f"[${bb_lower:.2f}, ${bb_upper:.2f}]，RSI={rsi:.1f}")
-            return "HOLD", confidence, reason
+            return "HOLD", 5, (f"价格 ${latest_close:.2f} 在布林带区间内 "
+                              f"[${bb_lower:.2f}, ${bb_upper:.2f}]，RSI={rsi:.1f}")
     
     def get_signal(self, 
                    ticker: str,
-                   end_dt: Optional[datetime] = None,
-                   lookback_minutes: int = 60,
-                   timeframe: TimeFrame = TimeFrame(5, TimeFrameUnit.Minute)) -> Tuple[Dict, float]:
+                   new_data: pd.DataFrame,
+                   verbose: bool = True) -> Tuple[Dict, float]:
         """
-        获取指定时间点的交易信号。
+        获取交易信号。
+        
+        数据会与历史数据合并后再计算指标，确保有足够的数据点。
         
         Args:
             ticker: 股票代码
-            end_dt: 结束时间（默认为当前时间）
-            lookback_minutes: 回溯时间长度（分钟）
-            timeframe: K线时间框架
+            new_data: 新的 OHLCV DataFrame，索引为时间戳，
+                      必须包含 'open', 'high', 'low', 'close', 'volume' 列
+            verbose: 是否打印详细信息
             
         Returns:
             Tuple[signal_dict, current_price]:
-                - signal_dict: 包含 signal, confidence_score, reason 的字典
-                - current_price: 当前价格
+                - signal_dict: {'signal': str, 'confidence_score': int, 'reason': str}
+                - current_price: 最新价格
         """
-        # 1. 获取原始 K 线数据
-        df = self.data_fetcher.get_latest_bars(
-            ticker=ticker,
-            lookback_minutes=lookback_minutes,
-            timeframe=timeframe,
-            end_dt=end_dt
-        )
+        # 1. 合并历史数据和新数据
+        df = self._merge_data(ticker, new_data)
+        
+        if verbose:
+            print(f"📊 {ticker} 数据: {len(df)} 条K线 (新增: {len(new_data)})")
         
         if df.empty:
-            print(f"❌ 无法获取 {ticker} 的数据。")
             return {"signal": "HOLD", "confidence_score": 0, "reason": "No data"}, 0.0
         
         # 2. 计算技术指标
         df = self._calculate_bollinger_bands(df)
         df = self._calculate_rsi(df)
         
-        # 删除 NaN 行
-        df = df.dropna()
+        # 3. 获取有效数据（去除 NaN）
+        df_valid = df.dropna()
         
-        if df.empty:
-            print(f"❌ 计算技术指标后数据不足。")
-            return {"signal": "HOLD", "confidence_score": 0, "reason": "Insufficient data for indicators"}, 0.0
+        min_required = max(self.bb_period, self.rsi_window)
+        if df_valid.empty:
+            if verbose:
+                print(f"❌ 数据不足，需要至少 {min_required} 条有效数据")
+            return {"signal": "HOLD", "confidence_score": 0, 
+                    "reason": f"Insufficient data for indicators (need {min_required})"}, 0.0
         
-        # 3. 获取最新数据
-        latest_row = df.iloc[-1]
-        current_price = latest_row['close']
-        bb_upper = latest_row['BB_UPPER']
-        bb_lower = latest_row['BB_LOWER']
-        sma = latest_row['SMA']
-        rsi = latest_row['RSI']
+        # 4. 获取最新数据点
+        latest = df_valid.iloc[-1]
+        current_price = latest['close']
         
-        # 4. 生成信号
+        # 5. 生成信号
         signal, confidence, reason = self._generate_signal_from_indicators(
-            current_price, bb_upper, bb_lower, sma, rsi
+            current_price, latest['BB_UPPER'], latest['BB_LOWER'], 
+            latest['SMA'], latest['RSI']
         )
         
-        # 5. 打印信号信息
-        timestamp_str = df.index[-1].strftime('%Y-%m-%d %H:%M UTC') if hasattr(df.index[-1], 'strftime') else str(df.index[-1])
-        print(f"\n📊 [{timestamp_str}] {ticker} 技术分析:")
-        print(f"   价格: ${current_price:.2f}")
-        print(f"   布林带: [${bb_lower:.2f}, ${sma:.2f}, ${bb_upper:.2f}]")
-        print(f"   RSI: {rsi:.1f}")
-        print(f"   🎯 信号: {signal} (置信度: {confidence}/10)")
-        print(f"   💡 原因: {reason}")
+        # 6. 打印信息
+        if verbose:
+            timestamp_str = df_valid.index[-1].strftime('%Y-%m-%d %H:%M') if hasattr(df_valid.index[-1], 'strftime') else str(df_valid.index[-1])
+            print(f"   [{timestamp_str}] 价格: ${current_price:.2f} | "
+                  f"BB: [${latest['BB_LOWER']:.2f}, ${latest['BB_UPPER']:.2f}] | RSI: {latest['RSI']:.1f}")
+            print(f"   🎯 信号: {signal} (置信度: {confidence}/10) - {reason}")
         
-        signal_dict = {
+        return {
             "signal": signal,
             "confidence_score": confidence,
             "reason": reason
-        }
-        
-        return signal_dict, current_price
+        }, current_price
+    
+    def __str__(self):
+        return f"MeanReversionStrategy(BB={self.bb_period}, RSI={self.rsi_window})"
 
 
-# 测试用例
+# ==================== 测试用例 ====================
 if __name__ == '__main__':
-    from datetime import datetime, timezone
-    # 需要假设 AlpacaDataFetcher 存在于 src.data_fetcher.alpaca_data_fetcher
-    class MockDataFetcher:
-        def get_latest_bars(self, ticker, lookback_minutes, timeframe, end_dt):
-            print(f"Mocking data fetch for {ticker}...")
-            # 构造模拟数据，确保有足够的行进行指标计算
-            data = {
-                'open': [100, 101, 99, 98, 97, 96, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110],
-                'high': [101, 102, 100, 99, 98, 97, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111],
-                'low': [99, 100, 98, 97, 96, 95, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109],
-                'close': [100.5, 101.5, 99.5, 98.5, 97.5, 96.5, 95.5, 96.5, 97.5, 98.5, 99.5, 100.5, 101.5, 102.5, 103.5, 104.5, 105.5, 106.5, 107.5, 108.5, 109.5, 110.5],
-                'volume': [1000] * 22
-            }
-            # 创建一个时间索引
-            index = pd.to_datetime(pd.date_range(end=datetime.now(timezone.utc), periods=len(data['close']), freq='5min'), utc=True)
-            return pd.DataFrame(data, index=index)
-
-    fetcher = MockDataFetcher() # 使用 Mock 替代 AlpacaDataFetcher
+    from datetime import timedelta
     
-    strategy = MeanReversionStrategy(
-        data_fetcher=fetcher,
-        bb_period=20,
-        bb_std_dev=2,
-        rsi_window=14,
-        rsi_oversold=30,
-        rsi_overbought=70
-    )
+    def create_test_data(num_bars: int, base_price: float, start_time: datetime) -> pd.DataFrame:
+        """创建测试用 OHLCV 数据"""
+        np.random.seed(42)
+        prices = base_price + np.cumsum(np.random.randn(num_bars) * 0.5)
+        index = pd.DatetimeIndex([start_time + timedelta(minutes=i*5) for i in range(num_bars)])
+        return pd.DataFrame({
+            'open': prices - 0.1,
+            'high': prices + 0.3,
+            'low': prices - 0.3,
+            'close': prices,
+            'volume': np.random.randint(1000, 5000, num_bars)
+        }, index=index)
     
-    # 测试获取信号
-    print("\n" + "="*60)
-    print("测试 MeanReversionStrategy - 纯数学计算")
+    print("="*60)
+    print("测试 MeanReversionStrategy (无 data_fetcher 依赖)")
     print("="*60)
     
-    signal_dict, price = strategy.get_signal(
-        ticker="TSLA",
-        lookback_minutes=120,
-        timeframe=TimeFrame(5, TimeFrameUnit.Minute)
+    # 初始化策略
+    strategy = MeanReversionStrategy(
+        bb_period=20,
+        rsi_window=14,
+        max_history_bars=100
     )
     
-    print(f"\n最终输出:")
-    print(f"  信号: {signal_dict['signal']}")
-    print(f"  置信度: {signal_dict['confidence_score']}/10")
-    print(f"  原因: {signal_dict['reason']}")
-    print(f"  当前价格: ${price:.2f}")
+    # 模拟多次数据到达
+    base_time = datetime(2025, 12, 5, 9, 0, 0, tzinfo=timezone.utc)
+    
+    print("\n--- 第1批数据 (15条，不足以计算指标) ---")
+    data_1 = create_test_data(15, 100.0, base_time)
+    signal, price = strategy.get_signal("TSLA", data_1)
+    print(f"历史累积: {strategy.get_history_size('TSLA')} 条")
+    
+    print("\n--- 第2批数据 (10条，累积后足够) ---")
+    data_2 = create_test_data(10, 102.0, base_time + timedelta(minutes=75))
+    signal, price = strategy.get_signal("TSLA", data_2)
+    print(f"历史累积: {strategy.get_history_size('TSLA')} 条")
+    
+    print("\n--- 第3批数据 (5条，继续累积) ---")
+    data_3 = create_test_data(5, 101.0, base_time + timedelta(minutes=125))
+    signal, price = strategy.get_signal("TSLA", data_3)
+    print(f"历史累积: {strategy.get_history_size('TSLA')} 条")
+    
+    print("\n--- 测试独立 ticker ---")
+    aapl_data = create_test_data(30, 150.0, base_time)
+    signal, price = strategy.get_signal("AAPL", aapl_data)
+    print(f"TSLA 历史: {strategy.get_history_size('TSLA')} 条")
+    print(f"AAPL 历史: {strategy.get_history_size('AAPL')} 条")
+    
+    print("\n--- 清除 TSLA 历史 ---")
+    strategy.clear_history("TSLA")
+    print(f"TSLA 历史: {strategy.get_history_size('TSLA')} 条")
+    print(f"AAPL 历史: {strategy.get_history_size('AAPL')} 条")

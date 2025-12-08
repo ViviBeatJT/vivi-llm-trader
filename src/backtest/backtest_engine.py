@@ -1,5 +1,7 @@
+# src/backtest/backtest_engine.py
+
 from datetime import datetime, timezone, timedelta
-from typing import Optional, Tuple, Any
+from typing import Tuple
 import pandas as pd
 from src.cache.trading_cache import TradingCache
 from src.manager.position_manager import PositionManager
@@ -9,9 +11,13 @@ from src.strategies.base_strategy import BaseStrategy
 
 class BacktestEngine:
     """
-    Class-based Backtest Engine.
-    Orchestrates the interaction between Data, Strategy, and Execution.
-    The engine is now strictly for backtesting historical data.
+    回测引擎 - 协调数据获取、策略执行和仓位管理。
+    
+    职责分离：
+    - DataFetcher: 获取市场数据
+    - Strategy: 分析数据，生成信号（不负责获取数据）
+    - PositionManager: 执行交易，管理仓位
+    - BacktestEngine: 协调以上组件
     """
 
     def __init__(self, 
@@ -22,19 +28,21 @@ class BacktestEngine:
                  position_manager: PositionManager, 
                  data_fetcher: AlpacaDataFetcher, 
                  cache: TradingCache,
-                 step_minutes: int = 5):
+                 step_minutes: int = 5,
+                 lookback_minutes: int = 120):
         """
-        Initialize the Backtest engine.
+        初始化回测引擎。
 
         Args:
-            ticker: Stock symbol to trade.
-            start_dt: Start datetime for the backtest.
-            end_dt: End datetime for the backtest.
-            strategy: Strategy object (must have a get_signal method).
-            position_manager: Initialized PositionManager for execution and state tracking.
-            data_fetcher: Data fetcher for retrieving market data.
-            cache: Cache object for storing/retrieving AI analysis or data.
-            step_minutes: Time step for the simulation loop.
+            ticker: 股票代码
+            start_dt: 回测开始时间
+            end_dt: 回测结束时间
+            strategy: 策略实例（只负责生成信号）
+            position_manager: 仓位管理器
+            data_fetcher: 数据获取器
+            cache: 缓存对象
+            step_minutes: 模拟步进间隔（分钟）
+            lookback_minutes: 每次获取数据的回溯时间（分钟）
         """
         self.ticker = ticker
         self.start_dt = start_dt
@@ -44,80 +52,99 @@ class BacktestEngine:
         self.data_fetcher = data_fetcher
         self.cache = cache
         self.step_minutes = step_minutes
+        self.lookback_minutes = lookback_minutes
+
+    def _fetch_data(self, current_time: datetime) -> pd.DataFrame:
+        """
+        获取指定时间点的市场数据。
+        
+        Args:
+            current_time: 当前模拟时间
+            
+        Returns:
+            pd.DataFrame: OHLCV 数据
+        """
+        return self.data_fetcher.get_latest_bars(
+            ticker=self.ticker,
+            lookback_minutes=self.lookback_minutes,
+            end_dt=current_time,
+            timeframe=TimeFrame(5, TimeFrameUnit.Minute)
+        )
 
     def _get_current_price(self, current_time: datetime) -> float:
-        """
-        Helper to get the price at a specific time for backtesting.
-        Fetches historical bar data.
-        """
-        # For backtest, we need the price at 'current_time'
-        # We fetch a small window ending at current_time
+        """获取指定时间的价格（用于仓位估值）。"""
         df = self.data_fetcher.get_latest_bars(
             ticker=self.ticker,
-            lookback_minutes=15, # Look back a bit to ensure we find a bar
+            lookback_minutes=15,
             end_dt=current_time,
-            timeframe=TimeFrame(1, TimeFrameUnit.Minute) # Granular data for price
+            timeframe=TimeFrame(1, TimeFrameUnit.Minute)
         )
-        
         if not df.empty:
-            # Return the close of the most recent bar relative to current_time
             return df.iloc[-1]['close']
         return 0.0
 
     def run(self) -> Tuple[float, pd.DataFrame]:
         """
-        Execute the backtest loop.
+        执行回测循环。
         
         Returns:
-            Tuple[float, pd.DataFrame]: Final equity and the trade log.
+            Tuple[final_equity, trade_log_df]
         """
         current_time = self.start_dt
         results = []
         
         initial_status = self.position_manager.get_account_status(current_price=0.0)
-        print(f"📈 Engine Started: {self.start_dt} to {self.end_dt} | Initial Cash: ${initial_status['cash']:,.2f}")
+        print(f"📈 回测开始: {self.start_dt} → {self.end_dt}")
+        print(f"   初始资金: ${initial_status['cash']:,.2f}")
+        print(f"   策略: {self.strategy}")
+        print("-" * 50)
         
         while current_time <= self.end_dt:
-            # Ensure timezone awareness
+            # 确保时区
             if current_time.tzinfo is None:
                 current_time = current_time.replace(tzinfo=timezone.utc)
             
-            # 1. Get Price at this moment
+            # 1. 获取当前价格（用于仓位估值）
             current_price = self._get_current_price(current_time)
             
             if current_price <= 0:
-                print(f"⚠️ No price data for {current_time}, skipping step.")
                 current_time += timedelta(minutes=self.step_minutes)
                 continue
 
-            # 2. Update Position Manager State (Mark-to-Market)
-            current_status = self.position_manager.get_account_status(current_price=current_price)
+            # 2. 获取策略所需的数据
+            market_data = self._fetch_data(current_time)
             
-            # 3. Get Signal from Strategy
+            if market_data.empty:
+                print(f"⚠️ {current_time}: 无市场数据，跳过")
+                current_time += timedelta(minutes=self.step_minutes)
+                continue
+
+            # 3. 调用策略获取信号（策略只分析数据，不获取数据）
             try:
                 signal_data, analysis_price = self.strategy.get_signal(
                     ticker=self.ticker,
-                    end_dt=current_time, # Context time
-                    lookback_minutes=120 # Standard lookback
+                    new_data=market_data,
+                    verbose=False  # 回测时减少输出
                 )
                 
                 signal = signal_data.get('signal', 'HOLD')
                 confidence = signal_data.get('confidence_score', 0)
                 reason = signal_data.get('reason', '')
                 
-                # Use the price from strategy if it's more relevant, otherwise use our fetched price
+                # 优先使用策略返回的价格
                 if analysis_price > 0:
                     current_price = analysis_price
 
             except Exception as e:
-                print(f"❌ Strategy Error at {current_time}: {e}")
+                print(f"❌ 策略错误 @ {current_time}: {e}")
                 signal = "HOLD"
                 confidence = 0
                 reason = f"Error: {e}"
 
-            # 4. Execute Trade (if any) via PositionManager
+            # 4. 执行交易
             if signal in ["BUY", "SELL"]:
-                print(f"🔥 Signal: {signal} | Price: ${current_price:.2f} | Conf: {confidence} | {reason[:50]}...")
+                print(f"🔥 {current_time.strftime('%m-%d %H:%M')} | {signal} | "
+                      f"${current_price:.2f} | 置信度: {confidence}")
                 
                 trade_result = self.position_manager.execute_and_update(
                     timestamp=current_time,
@@ -133,19 +160,17 @@ class BacktestEngine:
                     'executed': trade_result,
                     'reason': reason
                 })
-            else:
-                # Log HOLDs if needed, or just print
-                pass
             
             current_time += timedelta(minutes=self.step_minutes)
 
-        # --- Summary ---
+        # 汇总结果
         final_status = self.position_manager.get_account_status(current_price=current_price)
         final_equity = final_status['equity']
         trade_log_df = self.position_manager.get_trade_log()
         
-        print("\n--- ✅ Backtest Complete ---")
-        print(f"Total Signals: {len(results)}")
-        print(f"Final Equity: ${final_equity:,.2f}")
+        print("-" * 50)
+        print(f"✅ 回测完成")
+        print(f"   总信号数: {len(results)}")
+        print(f"   最终权益: ${final_equity:,.2f}")
         
         return final_equity, trade_log_df
