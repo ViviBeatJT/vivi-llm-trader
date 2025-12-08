@@ -1,13 +1,14 @@
 # src/backtest/backtest_engine.py
 
 from datetime import datetime, timezone, timedelta
-from typing import Tuple
+from typing import Tuple, Optional
 import pandas as pd
 from src.cache.trading_cache import TradingCache
 from src.manager.position_manager import PositionManager
 from src.data_fetcher.alpaca_data_fetcher import AlpacaDataFetcher
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 from src.strategies.base_strategy import BaseStrategy
+
 
 class BacktestEngine:
     """
@@ -29,7 +30,8 @@ class BacktestEngine:
                  data_fetcher: AlpacaDataFetcher, 
                  cache: TradingCache,
                  step_minutes: int = 5,
-                 lookback_minutes: int = 120):
+                 lookback_minutes: int = 120,
+                 timeframe: Optional[TimeFrame] = None):
         """
         初始化回测引擎。
 
@@ -43,6 +45,7 @@ class BacktestEngine:
             cache: 缓存对象
             step_minutes: 模拟步进间隔（分钟）
             lookback_minutes: 每次获取数据的回溯时间（分钟）
+            timeframe: K线时间框架（默认为5分钟）
         """
         self.ticker = ticker
         self.start_dt = start_dt
@@ -53,6 +56,7 @@ class BacktestEngine:
         self.cache = cache
         self.step_minutes = step_minutes
         self.lookback_minutes = lookback_minutes
+        self.timeframe = timeframe or TimeFrame(5, TimeFrameUnit.Minute)
 
     def _fetch_data(self, current_time: datetime) -> pd.DataFrame:
         """
@@ -68,7 +72,7 @@ class BacktestEngine:
             ticker=self.ticker,
             lookback_minutes=self.lookback_minutes,
             end_dt=current_time,
-            timeframe=TimeFrame(5, TimeFrameUnit.Minute)
+            timeframe=self.timeframe
         )
 
     def _get_current_price(self, current_time: datetime) -> float:
@@ -97,6 +101,7 @@ class BacktestEngine:
         print(f"📈 回测开始: {self.start_dt} → {self.end_dt}")
         print(f"   初始资金: ${initial_status['cash']:,.2f}")
         print(f"   策略: {self.strategy}")
+        print(f"   K线周期: {self.timeframe.amount} {self.timeframe.unit.name}")
         print("-" * 50)
         
         while current_time <= self.end_dt:
