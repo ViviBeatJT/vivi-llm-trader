@@ -113,12 +113,12 @@ class TestBacktestEngine(unittest.TestCase):
     # ==================== _fetch_data 测试 ====================
     
     def test_fetch_data_calls_data_fetcher(self):
-        """测试 _fetch_data 正确调用 data_fetcher"""
+        """测试 _fetch_data 正确调用 data_fetcher 并返回数据和价格"""
         mock_data = create_mock_ohlcv_data(num_bars=20)
         self.mock_data_fetcher.get_latest_bars.return_value = mock_data
         
         current_time = datetime(2025, 12, 5, 9, 30, 0, tzinfo=timezone.utc)
-        result = self.engine._fetch_data(current_time)
+        df, price = self.engine._fetch_data(current_time)
         
         self.mock_data_fetcher.get_latest_bars.assert_called_once_with(
             ticker=self.ticker,
@@ -127,7 +127,9 @@ class TestBacktestEngine(unittest.TestCase):
             timeframe=self.timeframe
         )
         
-        self.assertEqual(len(result), 20)
+        self.assertEqual(len(df), 20)
+        # 价格应该是最后一条数据的 close
+        self.assertAlmostEqual(price, mock_data.iloc[-1]['close'])
     
     def test_fetch_data_uses_configured_timeframe(self):
         """测试 _fetch_data 使用配置的 timeframe"""
@@ -150,27 +152,14 @@ class TestBacktestEngine(unittest.TestCase):
         call_args = self.mock_data_fetcher.get_latest_bars.call_args
         self.assertEqual(call_args.kwargs['timeframe'], custom_timeframe)
     
-    # ==================== _get_current_price 测试 ====================
-    
-    def test_get_current_price_success(self):
-        """测试成功获取当前价格"""
-        mock_data = create_mock_ohlcv_data(num_bars=5, base_price=150.0)
-        self.mock_data_fetcher.get_latest_bars.return_value = mock_data
-        
-        current_time = datetime(2025, 12, 5, 9, 30, 0, tzinfo=timezone.utc)
-        price = self.engine._get_current_price(current_time)
-        
-        self.assertGreater(price, 0)
-        # 验证使用的是最后一条数据的 close 价格
-        self.assertAlmostEqual(price, mock_data.iloc[-1]['close'])
-    
-    def test_get_current_price_no_data(self):
-        """测试无数据时返回 0"""
+    def test_fetch_data_empty_returns_zero_price(self):
+        """测试空数据时返回价格为 0"""
         self.mock_data_fetcher.get_latest_bars.return_value = pd.DataFrame()
         
         current_time = datetime(2025, 12, 5, 9, 30, 0, tzinfo=timezone.utc)
-        price = self.engine._get_current_price(current_time)
+        df, price = self.engine._fetch_data(current_time)
         
+        self.assertTrue(df.empty)
         self.assertEqual(price, 0.0)
     
     # ==================== run() 测试 ====================
@@ -256,16 +245,14 @@ class TestBacktestEngine(unittest.TestCase):
         # 验证 execute_and_update 未被调用
         self.mock_position_manager.execute_and_update.assert_not_called()
     
-    def test_run_skips_when_no_price(self):
-        """测试无价格数据时跳过"""
-        # 使用函数来处理多次调用
+    def test_run_skips_when_no_data(self):
+        """测试无数据时跳过"""
+        # 第一次返回空，后续返回有效数据
         call_count = [0]
         def mock_get_latest_bars(**kwargs):
             call_count[0] += 1
-            # 第一次获取价格返回空（模拟无价格）
             if call_count[0] == 1:
-                return pd.DataFrame()
-            # 后续调用返回有效数据
+                return pd.DataFrame()  # 第一次无数据
             return create_mock_ohlcv_data(num_bars=30)
         
         self.mock_data_fetcher.get_latest_bars.side_effect = mock_get_latest_bars
@@ -278,26 +265,6 @@ class TestBacktestEngine(unittest.TestCase):
         # 应该不会崩溃
         final_equity, trade_log = self.engine.run()
         self.assertIsNotNone(final_equity)
-    
-    def test_run_skips_when_no_market_data(self):
-        """测试无市场数据时跳过策略调用"""
-        # 价格获取成功，但市场数据为空
-        price_data = create_mock_ohlcv_data(num_bars=5, base_price=100.0)
-        
-        call_count = [0]
-        def mock_get_latest_bars(**kwargs):
-            call_count[0] += 1
-            if kwargs.get('lookback_minutes') == 15:  # _get_current_price 调用
-                return price_data
-            else:  # _fetch_data 调用
-                return pd.DataFrame()  # 返回空数据
-        
-        self.mock_data_fetcher.get_latest_bars.side_effect = mock_get_latest_bars
-        
-        self.engine.run()
-        
-        # 策略不应被调用（因为无市场数据）
-        self.mock_strategy.get_signal.assert_not_called()
     
     def test_run_handles_strategy_exception(self):
         """测试处理策略异常"""

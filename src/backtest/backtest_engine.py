@@ -58,34 +58,30 @@ class BacktestEngine:
         self.lookback_minutes = lookback_minutes
         self.timeframe = timeframe or TimeFrame(5, TimeFrameUnit.Minute)
 
-    def _fetch_data(self, current_time: datetime) -> pd.DataFrame:
+    def _fetch_data(self, current_time: datetime) -> Tuple[pd.DataFrame, float]:
         """
-        获取指定时间点的市场数据。
+        获取指定时间点的市场数据和当前价格。
         
         Args:
             current_time: 当前模拟时间
             
         Returns:
-            pd.DataFrame: OHLCV 数据
+            Tuple[pd.DataFrame, float]: (OHLCV 数据, 最新价格)
         """
-        return self.data_fetcher.get_latest_bars(
+        df = self.data_fetcher.get_latest_bars(
             ticker=self.ticker,
             lookback_minutes=self.lookback_minutes,
             end_dt=current_time,
             timeframe=self.timeframe
         )
-
-    def _get_current_price(self, current_time: datetime) -> float:
-        """获取指定时间的价格（用于仓位估值）。"""
-        df = self.data_fetcher.get_latest_bars(
-            ticker=self.ticker,
-            lookback_minutes=15,
-            end_dt=current_time,
-            timeframe=TimeFrame(1, TimeFrameUnit.Minute)
-        )
+        
+        # 从获取的数据中提取最新价格
         if not df.empty:
-            return df.iloc[-1]['close']
-        return 0.0
+            current_price = df.iloc[-1]['close']
+        else:
+            current_price = 0.0
+        
+        return df, current_price
 
     def run(self) -> Tuple[float, pd.DataFrame]:
         """
@@ -96,6 +92,7 @@ class BacktestEngine:
         """
         current_time = self.start_dt
         results = []
+        current_price = 0.0  # 用于最后计算权益
         
         initial_status = self.position_manager.get_account_status(current_price=0.0)
         print(f"📈 回测开始: {self.start_dt} → {self.end_dt}")
@@ -109,36 +106,29 @@ class BacktestEngine:
             if current_time.tzinfo is None:
                 current_time = current_time.replace(tzinfo=timezone.utc)
             
-            # 1. 获取当前价格（用于仓位估值）
-            current_price = self._get_current_price(current_time)
+            # 1. 获取数据（一次性获取，同时得到 DataFrame 和当前价格）
+            market_data, current_price = self._fetch_data(current_time)
             
-            if current_price <= 0:
+            if market_data.empty or current_price <= 0:
+                print(f"⚠️ {current_time.strftime('%m-%d %H:%M')}: 无市场数据，跳过")
                 current_time += timedelta(minutes=self.step_minutes)
                 continue
 
-            # 2. 获取策略所需的数据
-            market_data = self._fetch_data(current_time)
-            
-            if market_data.empty:
-                print(f"⚠️ {current_time}: 无市场数据，跳过")
-                current_time += timedelta(minutes=self.step_minutes)
-                continue
-
-            # 3. 调用策略获取信号（策略只分析数据，不获取数据）
+            # 2. 调用策略获取信号
             try:
-                signal_data, analysis_price = self.strategy.get_signal(
+                signal_data, strategy_price = self.strategy.get_signal(
                     ticker=self.ticker,
                     new_data=market_data,
-                    verbose=False  # 回测时减少输出
+                    verbose=False
                 )
                 
                 signal = signal_data.get('signal', 'HOLD')
                 confidence = signal_data.get('confidence_score', 0)
                 reason = signal_data.get('reason', '')
                 
-                # 优先使用策略返回的价格
-                if analysis_price > 0:
-                    current_price = analysis_price
+                # 优先使用策略返回的价格（如果有效）
+                if strategy_price > 0:
+                    current_price = strategy_price
 
             except Exception as e:
                 print(f"❌ 策略错误 @ {current_time}: {e}")
@@ -146,7 +136,7 @@ class BacktestEngine:
                 confidence = 0
                 reason = f"Error: {e}"
 
-            # 4. 执行交易
+            # 3. 执行交易
             if signal in ["BUY", "SELL"]:
                 print(f"🔥 {current_time.strftime('%m-%d %H:%M')} | {signal} | "
                       f"${current_price:.2f} | 置信度: {confidence}")
