@@ -9,7 +9,7 @@ import pytz
 from src.cache.trading_cache import TradingCache
 from src.manager.position_manager import PositionManager
 from src.data_fetcher.alpaca_data_fetcher import AlpacaDataFetcher
-from src.backtest.backtest_engine import BacktestEngine
+from src.engine.backtest_engine import BacktestEngine
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 
 # --- Executors ---
