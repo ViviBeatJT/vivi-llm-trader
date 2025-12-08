@@ -11,6 +11,7 @@ class BacktestEngine:
     """
     Class-based Backtest Engine.
     Orchestrates the interaction between Data, Strategy, and Execution.
+    The engine is now strictly for backtesting historical data.
     """
 
     def __init__(self, 
@@ -21,8 +22,7 @@ class BacktestEngine:
                  position_manager: PositionManager, 
                  data_fetcher: AlpacaDataFetcher, 
                  cache: TradingCache,
-                 step_minutes: int = 5,
-                 is_live_run: bool = False):
+                 step_minutes: int = 5):
         """
         Initialize the Backtest engine.
 
@@ -35,7 +35,6 @@ class BacktestEngine:
             data_fetcher: Data fetcher for retrieving market data.
             cache: Cache object for storing/retrieving AI analysis or data.
             step_minutes: Time step for the simulation loop.
-            is_live_run: Whether this is a real-time run or historical backtest.
         """
         self.ticker = ticker
         self.start_dt = start_dt
@@ -45,16 +44,12 @@ class BacktestEngine:
         self.data_fetcher = data_fetcher
         self.cache = cache
         self.step_minutes = step_minutes
-        self.is_live_run = is_live_run
 
     def _get_current_price(self, current_time: datetime) -> float:
         """
-        Helper to get the price at a specific time. 
-        In live mode, gets real-time price. In backtest, fetches historical bar.
+        Helper to get the price at a specific time for backtesting.
+        Fetches historical bar data.
         """
-        if self.is_live_run:
-            return self.data_fetcher.get_latest_price(self.ticker)
-        
         # For backtest, we need the price at 'current_time'
         # We fetch a small window ending at current_time
         df = self.data_fetcher.get_latest_bars(
@@ -71,7 +66,7 @@ class BacktestEngine:
 
     def run(self) -> Tuple[float, pd.DataFrame]:
         """
-        Execute the backtest or live run loop.
+        Execute the backtest loop.
         
         Returns:
             Tuple[float, pd.DataFrame]: Final equity and the trade log.
@@ -88,12 +83,10 @@ class BacktestEngine:
                 current_time = current_time.replace(tzinfo=timezone.utc)
             
             # 1. Get Price at this moment
-            # We need the price first to mark-to-market the portfolio
             current_price = self._get_current_price(current_time)
             
             if current_price <= 0:
                 print(f"⚠️ No price data for {current_time}, skipping step.")
-                if self.is_live_run: break # Don't loop infinitely in live if data fails
                 current_time += timedelta(minutes=self.step_minutes)
                 continue
 
@@ -101,10 +94,7 @@ class BacktestEngine:
             current_status = self.position_manager.get_account_status(current_price=current_price)
             
             # 3. Get Signal from Strategy
-            # Strategies might fetch their own data internally (like GeminiStrategy), 
-            # or we might pass data. Assuming standard interface: get_signal(ticker, time, ...)
             try:
-                # Note: Strategies usually return a dict and the price they used for analysis
                 signal_data, analysis_price = self.strategy.get_signal(
                     ticker=self.ticker,
                     end_dt=current_time, # Context time
@@ -145,11 +135,7 @@ class BacktestEngine:
                 })
             else:
                 # Log HOLDs if needed, or just print
-                # print(f"   HOLD | ${current_price:.2f}")
                 pass
-
-            if self.is_live_run:
-                break
             
             current_time += timedelta(minutes=self.step_minutes)
 

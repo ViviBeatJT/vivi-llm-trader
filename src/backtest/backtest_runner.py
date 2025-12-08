@@ -100,8 +100,7 @@ backtest_engine = BacktestEngine(
     position_manager=position_manager, # The execution & wallet
     data_fetcher=data_fetcher,       # The eyes
     cache=cache,                     # The memory
-    step_minutes=STEP_MINUTES,
-    is_live_run=not IS_BACKTEST_MODE
+    step_minutes=STEP_MINUTES
 )
 
 # Run
