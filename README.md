@@ -34,53 +34,17 @@ backtest_runner.py
 
 为了使系统更加健壮、功能更完善，您的后续改进想法将围绕职责分离、模块化和决策智能化进行。
 
-1. 核心模块化：引入仓位管理器（Position Manager）
 
-目标： 实现账户资金和持仓的集中管理，将复杂的财务和风险计算从执行器中分离出来。
+1. 在决策strategy中加入short决策，让仓位为空的时候也可以trade，相对应的在executor中加入short trade。、
 
-新增模块： PositionManager 类。
+2. 加入一个unit test runner，一次就可以跑所有的test
 
-职责：
+3. data fetcher, 加入一个基本类，然后实现不同api的data fetch，比如可以用moomoo api 来data fetch.
+data fetcher 要能获取仓位信息。live runner 的position manager要通过data fetcher来进行仓位信息获取，而不是自定义。
 
-维护当前账户的净值 (Equity)、可用资金 (Cash)、总仓位 (Total Position)。
+4. exectuor也要加入moomoo api的executor. 
 
-记录和计算每笔交易的利润/亏损 (PnL)。
-
-封装账户状态和风险控制相关的逻辑。
-
-交互升级： Executor (执行器) 将不再直接维护仓位状态，而是调用 PositionManager 来更新和查询账户信息。
-
-2. 策略升级：独立策略层与指标计算解耦
-
-目标： 建立一个独立的 Strategy 基类，允许更容易地添加新策略，并将技术指标的计算逻辑从数据获取器中迁移出来。
-
-策略基类： Strategy。
-
-具体策略： MeanReversionStrategy。
-
-职责迁移：
-
-将 布林带 (Bollinger Bands) 和 RSI 的计算逻辑从 alpaca_data_fetcher.py 迁移到 MeanReversionStrategy 中。
-
-DataFetcher 的职责将简化为仅获取原始 K 线数据。
-
-Strategy 接收原始数据，计算所需指标，然后将指标结果传递给 Decision Maker。
-
-3. 决策层分离：引入决策制定器（Decision Maker）
-
-目标： 将策略的“决策”环节抽象成一个可插拔的模块，以支持不同的决策模型（如 LLM、传统数学模型）。
-
-新增模块： DecisionMaker 基类。
-
-具体实现：
-
-GeminiDecisionMaker： 当前使用的 LLM 决策逻辑，接收指标数据，调用 Gemini API 输出交易信号。
-
-TraditionalDecisionMaker： 基于纯数学或规则的决策器（例如：收盘价低于下轨线，RSI < 30 即 BUY）。
-
-交互： Strategy 将调用 DecisionMaker.decide(df_with_indicators) 来获取最终的 BUY/SELL/HOLD 信号。
-
-4. 长期规划：结合 LLM 深度分析 (Wall Street News)
+5. 长期规划：结合 LLM 深度分析 (Wall Street News)
 
 目标： 利用 Gemini 模型的搜索和总结能力，纳入基本面和市场情绪分析，实现多模态决策。
 
