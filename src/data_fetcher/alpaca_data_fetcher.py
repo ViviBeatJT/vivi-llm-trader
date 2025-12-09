@@ -4,7 +4,7 @@ import os
 from dotenv import load_dotenv
 import pandas as pd
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Optional, Dict, Any, List
 
 # 导入 Alpaca 数据 API 客户端
 from alpaca.data.historical import StockHistoricalDataClient
@@ -12,26 +12,44 @@ from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 from alpaca.data.enums import DataFeed
 
+# 导入 Alpaca 交易 API 客户端
+from alpaca.trading.client import TradingClient
+from alpaca.trading.requests import GetAssetsRequest
+from alpaca.trading.enums import AssetClass
+
 # 加载环境变量
 load_dotenv()
 
 
 class AlpacaDataFetcher:
     """
-    用于从 Alpaca 获取原始历史 K 线数据的类。
-    职责：仅负责获取和返回原始 OHLCV 数据，不进行任何技术指标计算。
+    用于从 Alpaca 获取原始历史 K 线数据和账户信息的类。
+    职责：
+    1. 获取和返回原始 OHLCV 数据
+    2. 获取账户状态和持仓信息
     """
 
-    def __init__(self):
-        """初始化 Alpaca 客户端。"""
+    def __init__(self, paper: bool = True):
+        """
+        初始化 Alpaca 客户端。
+        
+        Args:
+            paper: 是否使用模拟盘 API（默认 True）
+        """
         api_key = os.getenv('ALPACA_API_KEY_ID')
         secret_key = os.getenv('ALPACA_SECRET_KEY')
         
         if not api_key or not secret_key:
             print("⚠️ 警告: Alpaca API 密钥未设置。")
             self.data_client = None
+            self.trading_client = None
         else:
+            # 数据客户端（用于获取市场数据）
             self.data_client = StockHistoricalDataClient(api_key, secret_key)
+            # 交易客户端（用于获取账户和持仓信息）
+            self.trading_client = TradingClient(api_key, secret_key, paper=paper)
+        
+        self.paper = paper
 
     def _format_timestamp(self, dt: Optional[datetime]) -> str:
         """格式化时间戳用于日志输出。"""
@@ -44,6 +62,8 @@ class AlpacaDataFetcher:
     def _format_timeframe(self, timeframe: TimeFrame) -> str:
         """格式化 timeframe 用于日志输出。"""
         return f"{timeframe.amount}{timeframe.unit.name[0]}"  # e.g., "5M", "1H", "1D"
+
+    # ==================== 市场数据 API ====================
 
     def get_latest_bars(self, 
                        ticker: str, 
@@ -151,25 +171,213 @@ class AlpacaDataFetcher:
             print(f"❌ [{timestamp_str}] 获取 {ticker} 实时价格失败: {e}")
             return 0.0
 
+    # ==================== 账户与持仓 API ====================
+
+    def get_account(self) -> Dict[str, Any]:
+        """
+        获取 Alpaca 账户信息。
+        
+        Returns:
+            dict: 账户信息，包含以下字段：
+                - cash: 可用现金
+                - portfolio_value: 总资产价值
+                - buying_power: 购买力
+                - equity: 权益
+                - currency: 货币类型
+                - account_blocked: 账户是否被冻结
+                - trading_blocked: 交易是否被冻结
+                - pattern_day_trader: 是否为日内交易者
+                - daytrading_buying_power: 日内交易购买力
+        """
+        if not self.trading_client:
+            print("❌ Alpaca 交易客户端未初始化，无法获取账户信息。")
+            return {}
+        
+        timestamp_str = self._format_timestamp(datetime.now(timezone.utc))
+        
+        try:
+            account = self.trading_client.get_account()
+            
+            account_info = {
+                'cash': float(account.cash),
+                'portfolio_value': float(account.portfolio_value),
+                'buying_power': float(account.buying_power),
+                'equity': float(account.equity),
+                'currency': account.currency,
+                'account_blocked': account.account_blocked,
+                'trading_blocked': account.trading_blocked,
+                'pattern_day_trader': account.pattern_day_trader,
+                'daytrading_buying_power': float(account.daytrading_buying_power) if account.daytrading_buying_power else 0.0,
+                'last_equity': float(account.last_equity) if account.last_equity else 0.0,
+            }
+            
+            mode_str = "模拟盘" if self.paper else "实盘"
+            print(f"💼 [{timestamp_str}] 获取 {mode_str} 账户信息成功")
+            print(f"   现金: ${account_info['cash']:,.2f}")
+            print(f"   总权益: ${account_info['equity']:,.2f}")
+            print(f"   购买力: ${account_info['buying_power']:,.2f}")
+            
+            return account_info
+            
+        except Exception as e:
+            print(f"❌ [{timestamp_str}] 获取账户信息失败: {e}")
+            return {}
+
+    def get_position(self, ticker: str) -> Dict[str, Any]:
+        """
+        获取指定股票的持仓信息。
+        
+        Args:
+            ticker: 股票代码
+            
+        Returns:
+            dict: 持仓信息，包含以下字段：
+                - symbol: 股票代码
+                - qty: 持仓数量
+                - avg_entry_price: 平均成本价
+                - market_value: 市值
+                - current_price: 当前价格
+                - unrealized_pl: 未实现盈亏
+                - unrealized_plpc: 未实现盈亏百分比
+                - side: 持仓方向 (long/short)
+            如果无持仓，返回空字典
+        """
+        if not self.trading_client:
+            print("❌ Alpaca 交易客户端未初始化，无法获取持仓信息。")
+            return {}
+        
+        timestamp_str = self._format_timestamp(datetime.now(timezone.utc))
+        
+        try:
+            position = self.trading_client.get_open_position(ticker)
+            
+            position_info = {
+                'symbol': position.symbol,
+                'qty': float(position.qty),
+                'avg_entry_price': float(position.avg_entry_price),
+                'market_value': float(position.market_value),
+                'current_price': float(position.current_price),
+                'unrealized_pl': float(position.unrealized_pl),
+                'unrealized_plpc': float(position.unrealized_plpc),
+                'side': position.side.value,
+                'cost_basis': float(position.cost_basis),
+            }
+            
+            print(f"📊 [{timestamp_str}] {ticker} 持仓信息:")
+            print(f"   数量: {position_info['qty']:.0f} 股 ({position_info['side']})")
+            print(f"   均价: ${position_info['avg_entry_price']:.2f}")
+            print(f"   现价: ${position_info['current_price']:.2f}")
+            print(f"   市值: ${position_info['market_value']:,.2f}")
+            print(f"   盈亏: ${position_info['unrealized_pl']:,.2f} ({position_info['unrealized_plpc']*100:.2f}%)")
+            
+            return position_info
+            
+        except Exception as e:
+            # 如果没有持仓，API 会抛出异常
+            if "position does not exist" in str(e).lower():
+                print(f"📊 [{timestamp_str}] {ticker} 无持仓")
+                return {}
+            print(f"❌ [{timestamp_str}] 获取 {ticker} 持仓信息失败: {e}")
+            return {}
+
+    def get_all_positions(self) -> List[Dict[str, Any]]:
+        """
+        获取所有持仓信息。
+        
+        Returns:
+            list: 持仓列表，每个元素为一个持仓字典
+        """
+        if not self.trading_client:
+            print("❌ Alpaca 交易客户端未初始化，无法获取持仓信息。")
+            return []
+        
+        timestamp_str = self._format_timestamp(datetime.now(timezone.utc))
+        
+        try:
+            positions = self.trading_client.get_all_positions()
+            
+            if not positions:
+                print(f"📊 [{timestamp_str}] 当前无任何持仓")
+                return []
+            
+            position_list = []
+            for position in positions:
+                position_info = {
+                    'symbol': position.symbol,
+                    'qty': float(position.qty),
+                    'avg_entry_price': float(position.avg_entry_price),
+                    'market_value': float(position.market_value),
+                    'current_price': float(position.current_price),
+                    'unrealized_pl': float(position.unrealized_pl),
+                    'unrealized_plpc': float(position.unrealized_plpc),
+                    'side': position.side.value,
+                    'cost_basis': float(position.cost_basis),
+                }
+                position_list.append(position_info)
+            
+            print(f"📊 [{timestamp_str}] 获取到 {len(position_list)} 个持仓:")
+            for pos in position_list:
+                pnl_str = f"+${pos['unrealized_pl']:.2f}" if pos['unrealized_pl'] >= 0 else f"-${abs(pos['unrealized_pl']):.2f}"
+                print(f"   {pos['symbol']}: {pos['qty']:.0f} 股 @ ${pos['avg_entry_price']:.2f} | {pnl_str}")
+            
+            return position_list
+            
+        except Exception as e:
+            print(f"❌ [{timestamp_str}] 获取所有持仓失败: {e}")
+            return []
+
+    def sync_position_status(self, ticker: str) -> Dict[str, Any]:
+        """
+        同步指定股票的仓位状态（用于 PositionManager 同步）。
+        
+        Args:
+            ticker: 股票代码
+            
+        Returns:
+            dict: 同步后的状态，包含：
+                - cash: 可用现金
+                - position: 持仓数量
+                - avg_cost: 平均成本
+                - equity: 总权益
+                - market_value: 持仓市值
+                - current_price: 当前价格
+        """
+        timestamp_str = self._format_timestamp(datetime.now(timezone.utc))
+        
+        # 获取账户信息
+        account = self.get_account()
+        if not account:
+            return {}
+        
+        # 获取持仓信息
+        position = self.get_position(ticker)
+        
+        status = {
+            'cash': account.get('cash', 0.0),
+            'position': position.get('qty', 0.0),
+            'avg_cost': position.get('avg_entry_price', 0.0),
+            'equity': account.get('equity', 0.0),
+            'market_value': position.get('market_value', 0.0),
+            'current_price': position.get('current_price', 0.0),
+        }
+        
+        print(f"🔄 [{timestamp_str}] {ticker} 仓位状态同步完成")
+        
+        return status
+
 
 if __name__ == '__main__':
     # 测试用例
-    fetcher = AlpacaDataFetcher()
+    fetcher = AlpacaDataFetcher(paper=True)
     
-    print("\n--- 测试 get_latest_bars ---")
-    df = fetcher.get_latest_bars(ticker="TSLA", lookback_minutes=60)
-    if not df.empty:
-        print(f"数据列: {df.columns.tolist()}")
-        print(df.tail(3))
+    print("\n--- 测试 get_account ---")
+    account = fetcher.get_account()
     
-    print("\n--- 测试 get_latest_bars (指定时间) ---")
-    historical_time = datetime(2025, 12, 5, 15, 30, 0, tzinfo=timezone.utc)
-    df = fetcher.get_latest_bars(
-        ticker="TSLA", 
-        lookback_minutes=30,
-        timeframe=TimeFrame(5, TimeFrameUnit.Minute),
-        end_dt=historical_time
-    )
+    print("\n--- 测试 get_all_positions ---")
+    positions = fetcher.get_all_positions()
     
-    print("\n--- 测试 get_latest_price ---")
-    price = fetcher.get_latest_price(ticker="TSLA")
+    print("\n--- 测试 get_position (TSLA) ---")
+    position = fetcher.get_position("TSLA")
+    
+    print("\n--- 测试 sync_position_status (TSLA) ---")
+    status = fetcher.sync_position_status("TSLA")

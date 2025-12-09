@@ -1,137 +1,318 @@
 # src/manager/position_manager.py
 
+from datetime import datetime, timezone
+from typing import Dict, Any, Optional, TYPE_CHECKING
 import pandas as pd
-import numpy as np
-from datetime import datetime
-from typing import Literal, Dict, Any, List, Optional
-from src.executor.base_executor import BaseExecutor # 导入 BaseExecutor
+
+if TYPE_CHECKING:
+    from src.data_fetcher.alpaca_data_fetcher import AlpacaDataFetcher
+
 
 class PositionManager:
     """
-    仓位和资金管理器。
-    职责：
-    1. 统一管理账户状态（现金、持仓、平均成本）。
-    2. 执行交易逻辑（通过 BaseExecutor 成员）。
-    3. 根据执行结果，统一更新资金、仓位并计算净盈亏 (P&L)。
+    仓位管理器 - 管理交易仓位、现金和交易记录。
+    
+    支持两种模式：
+    1. 本地模拟模式：使用 SimulationExecutor，完全本地计算
+    2. API 模式：使用 AlpacaExecutor，可从 API 同步仓位状态
     """
 
-    def __init__(self, 
-                 executor: BaseExecutor, 
-                 finance_params: Dict[str, float]):
+    def __init__(self, executor, finance_params: Dict[str, Any], data_fetcher: Optional['AlpacaDataFetcher'] = None):
+        """
+        初始化仓位管理器。
         
-        # 交易执行器实例（可为 SimulationExecutor 或 AlpacaExecutor）
+        Args:
+            executor: 交易执行器（SimulationExecutor 或 AlpacaExecutor）
+            finance_params: 财务参数字典，包含：
+                - INITIAL_CAPITAL: 初始资金
+                - COMMISSION_RATE: 佣金率
+                - SLIPPAGE_RATE: 滑点率
+                - MIN_LOT_SIZE: 最小交易手数
+                - MAX_ALLOCATION: 最大仓位比例
+            data_fetcher: 数据获取器（可选，用于从 API 同步仓位）
+        """
         self.executor = executor
+        self.finance_params = finance_params
+        self.data_fetcher = data_fetcher
         
-        # 财务参数 (用于初始化和 P&L 计算)
-        self.INITIAL_CAPITAL = finance_params.get('INITIAL_CAPITAL', 100000.0)
+        # 本地状态
+        self._cash = finance_params.get('INITIAL_CAPITAL', 100000.0)
+        self._position = 0.0  # 持仓数量
+        self._avg_cost = 0.0  # 平均成本
         
-        # 核心跟踪变量
-        self.cash = self.INITIAL_CAPITAL  # 当前可用现金
-        self.position = 0.0              # 当前持仓数量 (股)
-        self.avg_cost = 0.0              # 当前持仓平均成本
-        self.trade_log: List[Dict[str, Any]] = []  # 记录所有交易详情
+        # 交易记录
+        self._trade_log = []
         
-        print(f"💰 PositionManager 初始化成功。初始资金: ${self.cash:,.2f}。使用执行器: {self.executor.__class__.__name__}")
-
-    def get_account_status(self, current_price: float) -> Dict[str, float]:
+        # 同步标志
+        self._synced = False
+    
+    def sync_from_api(self, ticker: str) -> bool:
         """
-        获取当前的账户状态（现金、总资产、持仓数量、平均成本）。
-        """
-        market_value = self.position * current_price
-        equity = self.cash + market_value
-        return {
-            'cash': self.cash,
-            'position': self.position,
-            'avg_cost': self.avg_cost,
-            'equity': equity,
-            'market_value': market_value
-        }
-
-    def execute_and_update(self,
-                           timestamp: datetime,
-                           signal: Literal["BUY", "SELL"],
-                           current_price: float) -> bool:
-        """
-        步骤 1: 调用 Executor 计算交易结果或提交实盘订单。
-        步骤 2: 根据 Executor 返回的结果，更新 Position Manager 的内部状态。
-        """
-        # 1. 调用 Executor 执行交易，获取结果
-        execution_result = self.executor.execute_trade(
-            timestamp=timestamp, 
-            signal=signal, 
-            current_price=current_price,
-            current_position=self.position,
-            current_cash=self.cash,
-            avg_cost=self.avg_cost # 传入平均成本供Executor使用（如果需要）
-        )
+        从 API 同步仓位状态。
         
-        if not execution_result.get('executed', False):
-            print(f"  ⚠️ Executor 未执行交易: {execution_result.get('log_message', '未知原因')}")
+        Args:
+            ticker: 股票代码
+            
+        Returns:
+            bool: 是否同步成功
+        """
+        if not self.data_fetcher:
+            print("⚠️ 未配置 data_fetcher，无法从 API 同步")
             return False
-
-        # 2. 从结果中提取关键数据
-        trade_type = execution_result['trade_type']
-        executed_qty = execution_result['executed_qty']
-        executed_price = execution_result['executed_price'] # 实际成交价格 (含滑点)
-        fee = execution_result['fee'] # 总费用 (手续费 + 印花税)
         
-        # 3. 统一的资金和仓位更新逻辑 (这是 PositionManager 的核心价值)
-        net_pnl = 0.0
-        
-        if trade_type == 'BUY':
-            total_cost = executed_qty * executed_price + fee
+        try:
+            status = self.data_fetcher.sync_position_status(ticker)
             
-            # **更新仓位和平均成本**
-            new_position = self.position + executed_qty
-            # 避免除以零
-            if new_position > 0:
-                self.avg_cost = (self.position * self.avg_cost + executed_qty * executed_price) / new_position
+            if not status:
+                print("❌ 从 API 同步仓位失败")
+                return False
+            
+            # 更新本地状态
+            self._cash = status.get('cash', self._cash)
+            self._position = status.get('position', 0.0)
+            self._avg_cost = status.get('avg_cost', 0.0)
+            self._synced = True
+            
+            print(f"✅ 仓位同步成功:")
+            print(f"   现金: ${self._cash:,.2f}")
+            print(f"   持仓: {self._position:.0f} 股")
+            if self._position > 0:
+                print(f"   均价: ${self._avg_cost:.2f}")
+            
+            return True
+            
+        except Exception as e:
+            print(f"❌ 同步仓位时出错: {e}")
+            return False
+    
+    def get_account_status(self, current_price: float = 0.0) -> Dict[str, Any]:
+        """
+        获取当前账户状态。
+        
+        Args:
+            current_price: 当前价格（用于计算市值和权益）
+            
+        Returns:
+            dict: 账户状态，包含：
+                - cash: 现金
+                - position: 持仓数量
+                - avg_cost: 平均成本
+                - market_value: 持仓市值
+                - equity: 总权益
+                - unrealized_pnl: 未实现盈亏
+        """
+        market_value = self._position * current_price
+        equity = self._cash + market_value
+        
+        unrealized_pnl = 0.0
+        if self._position > 0 and self._avg_cost > 0:
+            unrealized_pnl = (current_price - self._avg_cost) * self._position
+        
+        return {
+            'cash': self._cash,
+            'position': self._position,
+            'avg_cost': self._avg_cost,
+            'market_value': market_value,
+            'equity': equity,
+            'unrealized_pnl': unrealized_pnl,
+            'synced': self._synced
+        }
+    
+    def execute_and_update(self, 
+                          timestamp: datetime, 
+                          signal: str, 
+                          current_price: float,
+                          ticker: str = "UNKNOWN") -> bool:
+        """
+        执行交易并更新仓位。
+        
+        Args:
+            timestamp: 交易时间
+            signal: 交易信号 ('BUY' 或 'SELL')
+            current_price: 当前价格
+            ticker: 股票代码
+            
+        Returns:
+            bool: 是否执行成功
+        """
+        if signal not in ["BUY", "SELL"]:
+            return False
+        
+        # 计算交易数量
+        qty = self._calculate_trade_qty(signal, current_price)
+        
+        if qty <= 0:
+            print(f"⚠️ 计算交易数量为 0，跳过交易")
+            return False
+        
+        # 执行交易
+        try:
+            result = self.executor.execute(
+                signal=signal,
+                qty=qty,
+                price=current_price,
+                ticker=ticker
+            )
+            
+            if not result.get('success', False):
+                print(f"❌ 交易执行失败: {result.get('error', 'Unknown error')}")
+                return False
+            
+            # 更新本地状态
+            executed_qty = result.get('qty', qty)
+            executed_price = result.get('price', current_price)
+            fee = result.get('fee', 0.0)
+            
+            self._update_position(signal, executed_qty, executed_price, fee)
+            
+            # 记录交易
+            self._record_trade(
+                timestamp=timestamp,
+                signal=signal,
+                qty=executed_qty,
+                price=executed_price,
+                fee=fee,
+                ticker=ticker
+            )
+            
+            return True
+            
+        except Exception as e:
+            print(f"❌ 交易执行异常: {e}")
+            return False
+    
+    def _calculate_trade_qty(self, signal: str, current_price: float) -> int:
+        """
+        计算交易数量。
+        
+        Args:
+            signal: 交易信号
+            current_price: 当前价格
+            
+        Returns:
+            int: 交易数量
+        """
+        min_lot_size = self.finance_params.get('MIN_LOT_SIZE', 10)
+        max_allocation = self.finance_params.get('MAX_ALLOCATION', 0.2)
+        
+        if signal == "BUY":
+            # 计算可用资金
+            available_cash = self._cash * max_allocation
+            
+            # 考虑佣金和滑点
+            commission_rate = self.finance_params.get('COMMISSION_RATE', 0.0003)
+            slippage_rate = self.finance_params.get('SLIPPAGE_RATE', 0.0001)
+            effective_price = current_price * (1 + commission_rate + slippage_rate)
+            
+            # 计算可买数量
+            max_qty = int(available_cash / effective_price)
+            
+            # 取整到最小手数
+            qty = (max_qty // min_lot_size) * min_lot_size
+            
+            return max(qty, 0)
+            
+        elif signal == "SELL":
+            # 卖出全部持仓
+            qty = int(self._position)
+            
+            # 取整到最小手数
+            qty = (qty // min_lot_size) * min_lot_size
+            
+            return max(qty, 0)
+        
+        return 0
+    
+    def _update_position(self, signal: str, qty: int, price: float, fee: float):
+        """
+        更新仓位状态。
+        
+        Args:
+            signal: 交易信号
+            qty: 交易数量
+            price: 成交价格
+            fee: 交易费用
+        """
+        if signal == "BUY":
+            # 买入：增加持仓，减少现金
+            total_cost = qty * price + fee
+            
+            # 更新平均成本
+            if self._position > 0:
+                total_value = self._position * self._avg_cost + qty * price
+                self._avg_cost = total_value / (self._position + qty)
             else:
-                self.avg_cost = 0.0
-                
-            self.position = new_position
+                self._avg_cost = price
             
-            # **更新现金**
-            self.cash -= total_cost
-            log_message = f"  ⭐ 统一更新: 买入 {executed_qty:,.0f} 股 @ ${executed_price:.2f} | 费用: ${fee:.2f} | 剩余现金: ${self.cash:,.2f}"
+            self._position += qty
+            self._cash -= total_cost
             
-        elif trade_type == 'SELL' and executed_qty > 0:
+        elif signal == "SELL":
+            # 卖出：减少持仓，增加现金
+            proceeds = qty * price - fee
             
-            # **计算本次交易的 净收益 (P&L)**
-            capital_cost = executed_qty * self.avg_cost
-            income_before_fee = executed_qty * executed_price
-            net_pnl = income_before_fee - fee - capital_cost
+            self._position -= qty
+            self._cash += proceeds
             
-            # **更新现金**
-            self.cash += (income_before_fee - fee) 
-            
-            # **更新仓位**
-            self.position -= executed_qty
-            # 如果仓位完全清零，则平均成本归零
-            if self.position == 0.0:
-                self.avg_cost = 0.0 
-                
-            log_message = f"  🌟 统一更新: 卖出 {executed_qty:,.0f} 股 @ ${executed_price:.2f} | 净P&L: ${net_pnl:,.2f}"
-
-        else:
-            log_message = "  ❌ 统一更新失败: 执行器返回结果无效。"
-            
-        print(log_message)
+            # 如果清仓，重置平均成本
+            if self._position <= 0:
+                self._position = 0
+                self._avg_cost = 0.0
+    
+    def _record_trade(self, 
+                     timestamp: datetime, 
+                     signal: str, 
+                     qty: int, 
+                     price: float, 
+                     fee: float,
+                     ticker: str):
+        """记录交易。"""
+        # 计算本次交易盈亏（仅对卖出有意义）
+        net_pnl = 0.0
+        if signal == "SELL" and self._avg_cost > 0:
+            net_pnl = (price - self._avg_cost) * qty - fee
         
-        # 4. 记录交易日志
-        self.trade_log.append({
-            'time': timestamp, 
-            'type': trade_type, 
-            'qty': executed_qty,
-            'price': executed_price, 
-            'fee': fee, 
-            'net_pnl': net_pnl, 
-            'current_pos': self.position, 
-            'avg_cost': self.avg_cost
-        })
+        trade_record = {
+            'time': timestamp,
+            'ticker': ticker,
+            'type': signal,
+            'qty': qty,
+            'price': price,
+            'fee': fee,
+            'net_pnl': net_pnl,
+            'cash_after': self._cash,
+            'position_after': self._position
+        }
         
-        return True
-
+        self._trade_log.append(trade_record)
+    
     def get_trade_log(self) -> pd.DataFrame:
-        """返回交易日志 DataFrame。"""
-        return pd.DataFrame(self.trade_log)
+        """
+        获取交易记录。
+        
+        Returns:
+            pd.DataFrame: 交易记录表
+        """
+        if not self._trade_log:
+            return pd.DataFrame()
+        
+        return pd.DataFrame(self._trade_log)
+    
+    def reset(self):
+        """重置仓位管理器状态。"""
+        self._cash = self.finance_params.get('INITIAL_CAPITAL', 100000.0)
+        self._position = 0.0
+        self._avg_cost = 0.0
+        self._trade_log = []
+        self._synced = False
+        print("🔄 仓位管理器已重置")
+    
+    def set_data_fetcher(self, data_fetcher: 'AlpacaDataFetcher'):
+        """
+        设置数据获取器（用于 API 同步）。
+        
+        Args:
+            data_fetcher: 数据获取器实例
+        """
+        self.data_fetcher = data_fetcher
+        print("✅ 已设置数据获取器，可使用 sync_from_api() 同步仓位")

@@ -42,9 +42,9 @@ FINANCE_PARAMS = {
 TICKER = "TSLA"
 
 # 运行参数
-INTERVAL_SECONDS = 300       # 策略运行间隔（秒），300 = 5分钟
+INTERVAL_SECONDS = 300        # 策略运行间隔（秒），60 = 1分钟
 LOOKBACK_MINUTES = 120       # 数据回溯时间（分钟）
-DATA_TIMEFRAME = TimeFrame(5, TimeFrameUnit.Minute)  # K线周期
+DATA_TIMEFRAME = TimeFrame(5, TimeFrameUnit.Minute)  # K线周期：5分钟
 
 # 交易时间控制
 RESPECT_MARKET_HOURS = True  # 是否只在美股交易时间内运行
@@ -52,6 +52,9 @@ MAX_RUNTIME_MINUTES = None   # 最大运行时间（分钟），None = 无限制
 
 # 策略选择: 'mean_reversion' or 'gemini_ai'
 SELECTED_STRATEGY = 'mean_reversion'
+
+# 是否在启动时从 API 同步仓位状态（仅 paper/live 模式有效）
+SYNC_POSITION_ON_START = True
 
 # ==========================================
 # 2. Signal Callback (可选)
@@ -91,6 +94,7 @@ def main():
     print(f"   交易模式: {TRADING_MODE.upper()}")
     print(f"   策略: {SELECTED_STRATEGY}")
     print(f"   运行间隔: {INTERVAL_SECONDS} 秒")
+    print(f"   K线周期: {DATA_TIMEFRAME.amount} {DATA_TIMEFRAME.unit.name}")
     
     if TRADING_MODE == 'live':
         print("\n" + "⚠️"*20)
@@ -103,8 +107,9 @@ def main():
             print("已取消启动。")
             return
     
-    # A. Data Fetcher
-    data_fetcher = AlpacaDataFetcher()
+    # A. Data Fetcher（包含账户和持仓 API）
+    is_paper = TRADING_MODE in ['paper', 'simulation']
+    data_fetcher = AlpacaDataFetcher(paper=is_paper)
     
     # B. Cache System
     cache_path = os.path.join('cache', f'{TICKER}_live_cache.json')
@@ -114,19 +119,29 @@ def main():
     if TRADING_MODE == 'simulation':
         print("🔧 执行器: 本地模拟")
         executor = SimulationExecutor(FINANCE_PARAMS)
+        # 本地模拟不需要 data_fetcher
+        position_manager = PositionManager(executor, FINANCE_PARAMS)
     elif TRADING_MODE == 'paper':
         print("🔧 执行器: Alpaca 模拟盘 (Paper)")
         executor = AlpacaExecutor(paper=True, max_allocation_rate=FINANCE_PARAMS['MAX_ALLOCATION'])
+        # 传入 data_fetcher 以便同步仓位
+        position_manager = PositionManager(executor, FINANCE_PARAMS, data_fetcher=data_fetcher)
     elif TRADING_MODE == 'live':
         print("🔧 执行器: Alpaca 实盘 (Live)")
         executor = AlpacaExecutor(paper=False, max_allocation_rate=FINANCE_PARAMS['MAX_ALLOCATION'])
+        position_manager = PositionManager(executor, FINANCE_PARAMS, data_fetcher=data_fetcher)
     else:
         raise ValueError(f"无效的交易模式: {TRADING_MODE}")
     
-    position_manager = PositionManager(executor, FINANCE_PARAMS)
+    # D. 从 API 同步仓位状态（如果启用）
+    if SYNC_POSITION_ON_START and TRADING_MODE in ['paper', 'live']:
+        print(f"\n🔄 正在从 API 同步 {TICKER} 仓位状态...")
+        sync_success = position_manager.sync_from_api(TICKER)
+        if not sync_success:
+            print("⚠️ 仓位同步失败，将使用本地初始状态")
     
-    # D. Strategy
-    print(f"🧠 策略: {SELECTED_STRATEGY}")
+    # E. Strategy
+    print(f"\n🧠 策略: {SELECTED_STRATEGY}")
     
     if SELECTED_STRATEGY == 'mean_reversion':
         strategy = MeanReversionStrategy(
