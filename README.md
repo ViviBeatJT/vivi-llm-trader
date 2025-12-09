@@ -41,7 +41,10 @@ data fetcher 要能获取仓位信息。live runner 的position manager要通过
 
 2. exectuor也要加入moomoo api的executor. 
 
-3. 策略更新：upper band: short, middle cover, lower band, buy, middle sell.
+3. 更激进的交易规则：突破上轨做空，回到中线平空，跌破下轨做多，回到中线平多
+高频监控：每1分钟检查一次（可配置）
+5分钟K线：技术指标计算仍用5分钟线
+止损机制：单笔持仓亏损10%时自动平仓（可配置）
 
 4. add a list of ticker to monitor on. 
 

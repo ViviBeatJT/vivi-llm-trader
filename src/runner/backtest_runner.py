@@ -106,8 +106,8 @@ TICKER = "TSLA"
 
 # 时间设置 (使用 Eastern Time 更直观)
 # 美股交易时间: 9:30 AM - 4:00 PM ET
-START_TIME = US_EASTERN.localize(datetime(2025, 12, 3, 9, 30))   # 9:30 AM ET
-END_TIME = US_EASTERN.localize(datetime(2025, 12, 3, 16, 0))     # 4:00 PM ET
+START_TIME = US_EASTERN.localize(datetime(2025, 12, 8, 9, 30))   # 9:30 AM ET
+END_TIME = US_EASTERN.localize(datetime(2025, 12, 8, 16, 0))     # 4:00 PM ET
 
 STEP_MINUTES = 5
 LOOKBACK_MINUTES = 120  # Data lookback for strategy
