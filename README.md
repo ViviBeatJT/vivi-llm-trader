@@ -58,3 +58,10 @@ data fetcher 要能获取仓位信息。live runner 的position manager要通过
 LLM 对新闻内容进行**利好（Bullish）/利空（Bearish）**判断和总结。
 
 将情绪得分作为权重或乘数，调整最终的交易信号，增强策略对突发事件的抗风险能力。
+
+
+
+```
+python -m src.runner.backtest_runner
+python -m src.runner.live_runner                                                    
+```
