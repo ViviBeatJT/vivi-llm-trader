@@ -35,14 +35,15 @@ backtest_runner.py
 为了使系统更加健壮、功能更完善，您的后续改进想法将围绕职责分离、模块化和决策智能化进行。
 
 
-1. 在决策strategy中加入short决策，让仓位为空的时候也可以trade，相对应的在executor中加入short trade。、
 
-2. 加入一个unit test runner，一次就可以跑所有的test
-
-3. data fetcher, 加入一个基本类，然后实现不同api的data fetch，比如可以用moomoo api 来data fetch.
+1. data fetcher, 加入一个基本类，然后实现不同api的data fetch，比如可以用moomoo api 来data fetch.
 data fetcher 要能获取仓位信息。live runner 的position manager要通过data fetcher来进行仓位信息获取，而不是自定义。
 
-4. exectuor也要加入moomoo api的executor. 
+2. exectuor也要加入moomoo api的executor. 
+
+3. 策略更新：upper band: short, middle cover, lower band, buy, middle sell.
+
+4. add a list of ticker to monitor on. 
 
 5. 长期规划：结合 LLM 深度分析 (Wall Street News)
 
