@@ -249,9 +249,10 @@ class LiveEngine:
                 print(f"⚠️ 信号回调错误: {e}")
         
         # 4. 执行交易
-        if signal in ["BUY", "SELL"]:
+        if signal in ["BUY", "SELL", "SHORT", "COVER"]:
             self._signal_count += 1
-            print(f"\n🔥 [{now_et.strftime('%H:%M:%S')}] 交易信号!")
+            signal_emoji = {"BUY": "🟢", "SELL": "🔴", "SHORT": "🔻", "COVER": "🔺"}.get(signal, "⚪")
+            print(f"\n{signal_emoji} [{now_et.strftime('%H:%M:%S')}] 交易信号!")
             print(f"   信号: {signal} | 价格: ${current_price:.2f} | 置信度: {confidence}/10")
             print(f"   原因: {reason}")
             

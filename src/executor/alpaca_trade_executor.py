@@ -1,165 +1,208 @@
 # src/executor/alpaca_trade_executor.py
 
 import os
+from typing import Dict, Any, Optional
+from datetime import datetime, timezone
 from dotenv import load_dotenv
-from alpaca.trading.client import TradingClient
-from alpaca.trading.requests import MarketOrderRequest, GetAssetsRequest, ClosePositionRequest
-from alpaca.trading.enums import OrderSide, TimeInForce, AssetClass
-from alpaca.trading.models import Position
-from alpaca.common.exceptions import APIError
-from src.executor.base_executor import BaseExecutor
-from datetime import datetime
-from typing import Literal, Dict, Any, Optional
-import pandas as pd
-import numpy as np
 
-# --- 配置 ---
+from alpaca.trading.client import TradingClient
+from alpaca.trading.requests import MarketOrderRequest
+from alpaca.trading.enums import OrderSide, TimeInForce
+
 load_dotenv()
 
-# --- 交易参数 ---
-MAX_ALLOCATION_RATE = 0.2
-MIN_LOT_SIZE = 1  # Alpaca 允许 fractional share，但我们这里简化为 1 股最小单位。
 
-class AlpacaExecutor(BaseExecutor):
+class AlpacaExecutor:
     """
-    Alpaca 交易执行器：用于实盘或模拟交易环境，对接 Alpaca API。
-    它实现了 BaseExecutor 接口。
+    Alpaca 交易执行器 - 连接 Alpaca API 执行真实/模拟交易。
     
-    职责：仅负责将交易信号转换为 Alpaca 订单并提交。
+    支持的交易动作：
+    - BUY: 买入开多
+    - SELL: 卖出平多
+    - SHORT: 卖空开空（需要 margin 账户）
+    - COVER: 买入平空
     """
-    def __init__(self, paper: bool = True, max_allocation_rate: float = MAX_ALLOCATION_RATE):
+
+    def __init__(self, paper: bool = True, max_allocation_rate: float = 0.2):
+        """
+        初始化 Alpaca 执行器。
+        
+        Args:
+            paper: 是否使用模拟盘（默认 True）
+            max_allocation_rate: 最大仓位比例
+        """
+        api_key = os.getenv('ALPACA_API_KEY_ID')
+        secret_key = os.getenv('ALPACA_SECRET_KEY')
+        
+        if not api_key or not secret_key:
+            raise ValueError("Alpaca API 密钥未设置")
+        
+        self.trading_client = TradingClient(api_key, secret_key, paper=paper)
         self.paper = paper
-        self.MAX_ALLOCATION_RATE = max_allocation_rate
-        # 在实盘模式下，P&L和持仓由 Alpaca 账户管理，PositionManager 负责跟踪本地日志。
+        self.max_allocation_rate = max_allocation_rate
         
-        # 初始化 Alpaca 客户端
-        self.trading_client = TradingClient(
-            os.getenv('ALPACA_API_KEY_ID'), 
-            os.getenv('ALPACA_SECRET_KEY'), 
-            paper=self.paper
+        mode_str = "模拟盘" if paper else "实盘"
+        print(f"🔗 AlpacaExecutor 初始化: {mode_str}")
+    
+    def execute(self, 
+               signal: str, 
+               qty: int, 
+               price: float, 
+               ticker: str = "UNKNOWN") -> Dict[str, Any]:
+        """
+        执行交易。
+        
+        Args:
+            signal: 交易信号 (BUY, SELL, SHORT, COVER)
+            qty: 交易数量
+            price: 参考价格（市价单不使用，仅作记录）
+            ticker: 股票代码
+            
+        Returns:
+            dict: 执行结果
+        """
+        if signal not in ['BUY', 'SELL', 'SHORT', 'COVER']:
+            return {
+                'success': False,
+                'error': f'Invalid signal: {signal}'
+            }
+        
+        if qty <= 0:
+            return {
+                'success': False,
+                'error': f'Invalid quantity: {qty}'
+            }
+        
+        # 确定订单方向
+        if signal in ['BUY', 'COVER']:
+            order_side = OrderSide.BUY
+        else:  # SELL, SHORT
+            order_side = OrderSide.SELL
+        
+        # 创建市价单
+        order_request = MarketOrderRequest(
+            symbol=ticker,
+            qty=qty,
+            side=order_side,
+            time_in_force=TimeInForce.DAY
         )
-        mode = "模拟 (Paper)" if self.paper else "实盘 (Live)"
-        print(f"🚀 AlpacaExecutor 初始化成功。工作模式: {mode}")
-
-    def _get_current_position(self, ticker: str) -> Optional[Position]:
-        """获取指定股票的当前持仓。"""
-        try:
-            position_data = self.trading_client.get_open_position_by_symbol(ticker)
-            return position_data
-        except APIError as e:
-            if "position not found" in str(e):
-                return None
-            # 实盘模式下，如果 API 失败，必须抛出错误
-            raise
-
-    def execute_trade(self,
-                      timestamp: datetime,
-                      signal: Literal["BUY", "SELL"],
-                      current_price: float,
-                      current_position: float,
-                      current_cash: float,
-                      avg_cost: float) -> Dict[str, Any]:
-        """
-        实现 BaseExecutor 接口：提交订单到 Alpaca 并返回结果。
-        注意：实盘模式下，成交价格、数量和费用需要等待订单成交后才能确定。
-        为简化，我们假设市价单立即成交，并返回预期结果。PositionManager 会记录这些预期的交易。
-        """
-
-        ticker = "TSLA"  # 假设我们只交易 TSLA，实际应用中应该传递 Ticker
-
-        if current_price <= 0:
-            return self._fail_result("价格无效。")
-
-        if signal == 'BUY':
-            return self._execute_alpaca_buy(ticker, current_price, current_cash)
         
-        elif signal == 'SELL' and current_position > 0:
-            return self._execute_alpaca_sell(ticker, current_position)
-            
-        return self._fail_result(f"无执行信号或无仓位可卖 ({signal}).")
-
-    def _fail_result(self, reason: str) -> Dict[str, Any]:
-        """返回失败的交易结果模板。"""
-        return {
-            'executed': False,
-            'trade_type': 'N/A',
-            'executed_qty': 0.0,
-            'executed_price': 0.0,
-            'fee': 0.0,
-            'log_message': f"Alpaca 交易失败: {reason}"
-        }
-
-    def _execute_alpaca_buy(self, ticker: str, current_price: float, current_cash: float) -> Dict[str, Any]:
-        """提交 Alpaca 买入订单，并返回预期结果。"""
+        timestamp_str = datetime.now(timezone.utc).strftime('%H:%M:%S')
+        action_emoji = {
+            'BUY': '🟢 买入开多',
+            'SELL': '🔴 卖出平多',
+            'SHORT': '🔻 卖空开空',
+            'COVER': '🔺 买入平空'
+        }.get(signal, signal)
+        
         try:
-            # 1. 获取当前账户总资产 (需要 API 调用)
-            account = self.trading_client.get_account()
-            equity = float(account.equity)
-            
-            # 2. 计算可用于交易的金额
-            capital_to_use = min(current_cash, equity * self.MAX_ALLOCATION_RATE)
-            
-            # 检查资金是否充足
-            if capital_to_use <= 0:
-                return self._fail_result("资金不足。")
-
-            # 3. 计算购买数量
-            qty_float = capital_to_use / current_price
-            qty = np.floor(qty_float / MIN_LOT_SIZE) * MIN_LOT_SIZE
-            
-            # 检查数量是否满足最小交易单位
-            if qty < MIN_LOT_SIZE:
-                return self._fail_result("计算数量低于最小交易单位。")
-
-            # 4. 提交市价买入订单 (Market Order)
-            order_request = MarketOrderRequest(
-                symbol=ticker,
-                qty=qty,
-                side=OrderSide.BUY,
-                time_in_force=TimeInForce.DAY,
-            )
+            # 提交订单
             order = self.trading_client.submit_order(order_request)
             
-            # **注意: 实盘中需要等待订单填充才能获取真实的 executed_price 和 fee。
-            # 为了让 PositionManager 能够继续工作，我们返回一个预期结果。**
+            print(f"   💱 [{timestamp_str}] {action_emoji} {ticker}: {qty} 股")
+            print(f"      订单ID: {order.id}")
+            print(f"      状态: {order.status}")
             
-            # 假设 Alpaca 默认手续费为 0 (Commission-free)
-            # 假设成交价格就是 current_price
+            # 获取成交价格（市价单可能需要等待成交）
+            filled_price = float(order.filled_avg_price) if order.filled_avg_price else price
+            filled_qty = int(order.filled_qty) if order.filled_qty else qty
+            
+            # 估算费用（Alpaca 免佣金，但可能有其他费用）
+            fee = 0.0
             
             return {
-                'executed': True,
-                'trade_type': 'BUY',
-                'executed_qty': qty,
-                'executed_price': current_price, 
-                'fee': 0.0, 
-                'log_message': f"Alpaca 订单 {order.id} 已提交 (买入 {qty:,.0f} 股，状态: {order.status.value})"
+                'success': True,
+                'signal': signal,
+                'ticker': ticker,
+                'qty': filled_qty,
+                'price': filled_price,
+                'fee': fee,
+                'order_id': str(order.id),
+                'order_status': str(order.status),
+                'timestamp': datetime.now(timezone.utc)
             }
-
-        except APIError as e:
-            return self._fail_result(f"Alpaca API 错误: {e}")
+            
         except Exception as e:
-            return self._fail_result(f"交易执行失败: {e}")
-
-    def _execute_alpaca_sell(self, ticker: str, current_position: float) -> Dict[str, Any]:
-        """提交 Alpaca 卖出订单 (平仓) 并返回预期结果。"""
+            print(f"   ❌ [{timestamp_str}] 订单执行失败: {e}")
+            return {
+                'success': False,
+                'error': str(e)
+            }
+    
+    def get_account(self) -> Optional[Dict[str, Any]]:
+        """获取账户信息。"""
         try:
-            # 1. 提交平仓请求
-            # FIX: Use the symbol parameter correctly in ClosePositionRequest
-            order = self.trading_client.close_position(ticker)
-            
-            # **注意: 实际成交数量/价格/费用需要等待订单填充。**
-            # 为简化，我们假设卖出全部持仓，费用为 0。
-
+            account = self.trading_client.get_account()
             return {
-                'executed': True,
-                'trade_type': 'SELL',
-                'executed_qty': current_position,  # 预期卖出全部
-                'executed_price': 0.0,  # 预期价格 (P/L由PositionManager计算，这里给0.0)
-                'fee': 0.0, 
-                'log_message': f"Alpaca 订单 {order.id} 已提交 (平仓 {current_position:,.0f} 股，状态: {order.status.value})"
+                'cash': float(account.cash),
+                'buying_power': float(account.buying_power),
+                'equity': float(account.equity),
+                'portfolio_value': float(account.portfolio_value),
+                'shorting_enabled': account.shorting_enabled,
             }
-
-        except APIError as e:
-            return self._fail_result(f"Alpaca API 错误: {e}")
         except Exception as e:
-            return self._fail_result(f"交易执行失败: {e}")
+            print(f"❌ 获取账户信息失败: {e}")
+            return None
+    
+    def cancel_all_orders(self, ticker: Optional[str] = None) -> bool:
+        """
+        取消所有挂单。
+        
+        Args:
+            ticker: 股票代码（可选，如果指定则只取消该股票的订单）
+            
+        Returns:
+            bool: 是否成功
+        """
+        try:
+            if ticker:
+                # 获取指定股票的订单并取消
+                orders = self.trading_client.get_orders(
+                    filter={'symbol': ticker, 'status': 'open'}
+                )
+                for order in orders:
+                    self.trading_client.cancel_order_by_id(order.id)
+                print(f"✅ 已取消 {ticker} 的所有挂单")
+            else:
+                self.trading_client.cancel_orders()
+                print("✅ 已取消所有挂单")
+            return True
+        except Exception as e:
+            print(f"❌ 取消订单失败: {e}")
+            return False
+    
+    def close_position(self, ticker: str) -> bool:
+        """
+        平仓指定股票的所有持仓。
+        
+        Args:
+            ticker: 股票代码
+            
+        Returns:
+            bool: 是否成功
+        """
+        try:
+            self.trading_client.close_position(ticker)
+            print(f"✅ 已平仓 {ticker}")
+            return True
+        except Exception as e:
+            if "position does not exist" in str(e).lower():
+                print(f"⚠️ {ticker} 无持仓")
+                return True
+            print(f"❌ 平仓失败: {e}")
+            return False
+    
+    def close_all_positions(self) -> bool:
+        """
+        平仓所有持仓。
+        
+        Returns:
+            bool: 是否成功
+        """
+        try:
+            self.trading_client.close_all_positions(cancel_orders=True)
+            print("✅ 已平仓所有持仓")
+            return True
+        except Exception as e:
+            print(f"❌ 平仓所有持仓失败: {e}")
+            return False

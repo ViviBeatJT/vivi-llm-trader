@@ -137,8 +137,9 @@ class BacktestEngine:
                 reason = f"Error: {e}"
 
             # 3. 执行交易
-            if signal in ["BUY", "SELL"]:
-                print(f"🔥 {current_time.strftime('%m-%d %H:%M')} | {signal} | "
+            if signal in ["BUY", "SELL", "SHORT", "COVER"]:
+                signal_emoji = {"BUY": "🟢", "SELL": "🔴", "SHORT": "🔻", "COVER": "🔺"}.get(signal, "⚪")
+                print(f"{signal_emoji} {current_time.strftime('%m-%d %H:%M')} | {signal} | "
                       f"${current_price:.2f} | 置信度: {confidence}")
                 
                 trade_result = self.position_manager.execute_and_update(

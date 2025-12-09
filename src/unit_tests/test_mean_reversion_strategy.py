@@ -47,7 +47,8 @@ class TestMeanReversionStrategy(unittest.TestCase):
             rsi_window=14,
             rsi_oversold=30,
             rsi_overbought=70,
-            max_history_bars=100
+            max_history_bars=100,
+            enable_short=True
         )
         self.ticker = "TEST"
 
@@ -61,6 +62,7 @@ class TestMeanReversionStrategy(unittest.TestCase):
         self.assertEqual(self.strategy.rsi_oversold, 30)
         self.assertEqual(self.strategy.rsi_overbought, 70)
         self.assertEqual(self.strategy.max_history_bars, 100)
+        self.assertTrue(self.strategy.enable_short)
         self.assertEqual(self.strategy._history_data, {})
     
     def test_initialization_custom_params(self):
@@ -71,11 +73,13 @@ class TestMeanReversionStrategy(unittest.TestCase):
             rsi_window=10,
             rsi_oversold=25,
             rsi_overbought=75,
-            max_history_bars=200
+            max_history_bars=200,
+            enable_short=False
         )
         self.assertEqual(strategy.bb_period, 10)
         self.assertEqual(strategy.rsi_oversold, 25)
         self.assertEqual(strategy.max_history_bars, 200)
+        self.assertFalse(strategy.enable_short)
 
     # ==================== 技术指标计算测试 ====================
     
@@ -111,7 +115,7 @@ class TestMeanReversionStrategy(unittest.TestCase):
     # ==================== 信号生成测试 ====================
     
     def test_generate_buy_signal_strong(self):
-        """测试强买入信号"""
+        """测试强买入信号（超卖）"""
         signal, conf, reason = self.strategy._generate_signal_from_indicators(
             latest_close=90.0, bb_upper=105.0, bb_lower=95.0, sma=100.0, rsi=25.0
         )
@@ -120,28 +124,54 @@ class TestMeanReversionStrategy(unittest.TestCase):
         self.assertIn("超卖", reason)
 
     def test_generate_buy_signal_weak(self):
-        """测试弱买入信号"""
+        """测试弱买入信号（仅价格低于下轨）"""
         signal, conf, reason = self.strategy._generate_signal_from_indicators(
             latest_close=94.0, bb_upper=105.0, bb_lower=95.0, sma=100.0, rsi=40.0
         )
         self.assertEqual(signal, "BUY")
         self.assertEqual(conf, 6)
 
-    def test_generate_sell_signal_strong(self):
-        """测试强卖出信号"""
+    def test_generate_buy_signal_rsi_only(self):
+        """测试仅 RSI 超卖"""
+        signal, conf, reason = self.strategy._generate_signal_from_indicators(
+            latest_close=96.0, bb_upper=105.0, bb_lower=95.0, sma=100.0, rsi=25.0
+        )
+        self.assertEqual(signal, "BUY")
+        self.assertEqual(conf, 5)
+
+    def test_generate_short_signal_strong(self):
+        """测试强做空信号（超买，启用做空）"""
         signal, conf, reason = self.strategy._generate_signal_from_indicators(
             latest_close=106.0, bb_upper=105.0, bb_lower=95.0, sma=100.0, rsi=75.0
         )
-        self.assertEqual(signal, "SELL")
-        self.assertEqual(conf, 8)
+        self.assertEqual(signal, "SHORT")
+        self.assertEqual(conf, 9)
 
-    def test_generate_sell_signal_rsi_only(self):
-        """测试仅 RSI 超买"""
+    def test_generate_short_signal_weak_price_only(self):
+        """测试弱做空信号（仅价格高于上轨）"""
         signal, conf, reason = self.strategy._generate_signal_from_indicators(
-            latest_close=102.0, bb_upper=105.0, bb_lower=95.0, sma=100.0, rsi=75.0
+            latest_close=106.0, bb_upper=105.0, bb_lower=95.0, sma=100.0, rsi=60.0
+        )
+        self.assertEqual(signal, "SHORT")
+        self.assertEqual(conf, 6)
+
+    def test_generate_short_signal_weak_rsi_only(self):
+        """测试弱做空信号（仅 RSI 超买）"""
+        signal, conf, reason = self.strategy._generate_signal_from_indicators(
+            latest_close=103.0, bb_upper=105.0, bb_lower=95.0, sma=100.0, rsi=75.0
+        )
+        self.assertEqual(signal, "SHORT")
+        self.assertEqual(conf, 5)
+
+    def test_generate_sell_signal_when_short_disabled(self):
+        """测试禁用做空时产生 SELL 信号"""
+        strategy_no_short = MeanReversionStrategy(enable_short=False)
+        
+        signal, conf, reason = strategy_no_short._generate_signal_from_indicators(
+            latest_close=106.0, bb_upper=105.0, bb_lower=95.0, sma=100.0, rsi=75.0
         )
         self.assertEqual(signal, "SELL")
-        self.assertEqual(conf, 7)
+        self.assertEqual(conf, 9)
 
     def test_generate_hold_signal(self):
         """测试持有信号"""
@@ -158,6 +188,26 @@ class TestMeanReversionStrategy(unittest.TestCase):
         )
         self.assertEqual(signal, "HOLD")
         self.assertEqual(conf, 0)
+
+    # ==================== 信号验证测试 ====================
+    
+    def test_validate_signal_valid(self):
+        """测试有效信号验证"""
+        self.assertEqual(self.strategy._validate_signal('BUY'), 'BUY')
+        self.assertEqual(self.strategy._validate_signal('SELL'), 'SELL')
+        self.assertEqual(self.strategy._validate_signal('SHORT'), 'SHORT')
+        self.assertEqual(self.strategy._validate_signal('COVER'), 'COVER')
+        self.assertEqual(self.strategy._validate_signal('HOLD'), 'HOLD')
+
+    def test_validate_signal_lowercase(self):
+        """测试小写信号验证"""
+        self.assertEqual(self.strategy._validate_signal('buy'), 'BUY')
+        self.assertEqual(self.strategy._validate_signal('short'), 'SHORT')
+
+    def test_validate_signal_invalid(self):
+        """测试无效信号验证"""
+        self.assertEqual(self.strategy._validate_signal('INVALID'), 'HOLD')
+        self.assertEqual(self.strategy._validate_signal(''), 'HOLD')
 
     # ==================== 历史数据管理测试 ====================
     
@@ -246,7 +296,7 @@ class TestMeanReversionStrategy(unittest.TestCase):
         self.assertIn('signal', signal_dict)
         self.assertIn('confidence_score', signal_dict)
         self.assertIn('reason', signal_dict)
-        self.assertIn(signal_dict['signal'], ['BUY', 'SELL', 'HOLD'])
+        self.assertIn(signal_dict['signal'], ['BUY', 'SELL', 'SHORT', 'COVER', 'HOLD'])
         self.assertGreater(price, 0)
         self.assertEqual(self.strategy.get_history_size(self.ticker), 50)
 
@@ -292,7 +342,7 @@ class TestMeanReversionStrategy(unittest.TestCase):
         sig2, price2 = self.strategy.get_signal(self.ticker, data_2, verbose=False)
         
         self.assertEqual(self.strategy.get_history_size(self.ticker), 25)
-        self.assertIn(sig2['signal'], ['BUY', 'SELL', 'HOLD'])
+        self.assertIn(sig2['signal'], ['BUY', 'SELL', 'SHORT', 'COVER', 'HOLD'])
         self.assertGreater(price2, 0)
 
     def test_multiple_tickers_independent(self):
@@ -315,6 +365,13 @@ class TestMeanReversionStrategy(unittest.TestCase):
         s = str(self.strategy)
         self.assertIn("MeanReversion", s)
         self.assertIn("BB=20", s)
+        self.assertIn("SHORT", s)  # 因为 enable_short=True
+
+    def test_str_representation_no_short(self):
+        """测试禁用做空时的字符串表示"""
+        strategy_no_short = MeanReversionStrategy(enable_short=False)
+        s = str(strategy_no_short)
+        self.assertNotIn("SHORT", s)
 
 
 if __name__ == '__main__':

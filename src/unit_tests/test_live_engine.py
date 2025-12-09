@@ -100,7 +100,7 @@ class TestLiveEngine(unittest.TestCase):
     
     # ==================== 市场时间测试 ====================
     
-    @patch('src.live.live_engine.datetime')
+    @patch('src.engine.live_engine.datetime')
     def test_is_market_open_during_trading_hours(self, mock_datetime):
         """测试交易时间内返回 True"""
         # 模拟周一 10:00 AM ET
@@ -119,7 +119,7 @@ class TestLiveEngine(unittest.TestCase):
         with patch.object(engine, '_get_current_time_et', return_value=mock_now):
             self.assertTrue(engine._is_market_open())
     
-    @patch('src.live.live_engine.datetime')
+    @patch('src.engine.live_engine.datetime')
     def test_is_market_open_before_market_open(self, mock_datetime):
         """测试开盘前返回 False"""
         # 模拟周一 8:00 AM ET (开盘前)
@@ -136,7 +136,7 @@ class TestLiveEngine(unittest.TestCase):
         with patch.object(engine, '_get_current_time_et', return_value=mock_now):
             self.assertFalse(engine._is_market_open())
     
-    @patch('src.live.live_engine.datetime')
+    @patch('src.engine.live_engine.datetime')
     def test_is_market_open_after_market_close(self, mock_datetime):
         """测试收盘后返回 False"""
         # 模拟周一 5:00 PM ET (收盘后)
@@ -153,7 +153,7 @@ class TestLiveEngine(unittest.TestCase):
         with patch.object(engine, '_get_current_time_et', return_value=mock_now):
             self.assertFalse(engine._is_market_open())
     
-    @patch('src.live.live_engine.datetime')
+    @patch('src.engine.live_engine.datetime')
     def test_is_market_open_weekend(self, mock_datetime):
         """测试周末返回 False"""
         # 模拟周六 10:00 AM ET
@@ -248,6 +248,44 @@ class TestLiveEngine(unittest.TestCase):
         
         call_args = self.mock_position_manager.execute_and_update.call_args
         self.assertEqual(call_args.kwargs['signal'], "SELL")
+    
+    def test_run_single_iteration_short_signal(self):
+        """测试单次迭代 - SHORT 信号"""
+        mock_data = create_mock_ohlcv_data(num_bars=30)
+        self.mock_data_fetcher.get_latest_bars.return_value = mock_data
+        
+        self.mock_strategy.get_signal.return_value = (
+            {"signal": "SHORT", "confidence_score": 8, "reason": "Strong overbought"},
+            100.0
+        )
+        
+        result = self.engine._run_single_iteration()
+        
+        self.assertTrue(result)
+        self.assertEqual(self.engine._signal_count, 1)
+        self.mock_position_manager.execute_and_update.assert_called_once()
+        
+        call_args = self.mock_position_manager.execute_and_update.call_args
+        self.assertEqual(call_args.kwargs['signal'], "SHORT")
+    
+    def test_run_single_iteration_cover_signal(self):
+        """测试单次迭代 - COVER 信号"""
+        mock_data = create_mock_ohlcv_data(num_bars=30)
+        self.mock_data_fetcher.get_latest_bars.return_value = mock_data
+        
+        self.mock_strategy.get_signal.return_value = (
+            {"signal": "COVER", "confidence_score": 7, "reason": "Exit short"},
+            100.0
+        )
+        
+        result = self.engine._run_single_iteration()
+        
+        self.assertTrue(result)
+        self.assertEqual(self.engine._signal_count, 1)
+        self.mock_position_manager.execute_and_update.assert_called_once()
+        
+        call_args = self.mock_position_manager.execute_and_update.call_args
+        self.assertEqual(call_args.kwargs['signal'], "COVER")
     
     def test_run_single_iteration_no_data(self):
         """测试单次迭代 - 无数据"""

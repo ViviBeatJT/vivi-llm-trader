@@ -229,6 +229,42 @@ class TestBacktestEngine(unittest.TestCase):
         call_args = self.mock_position_manager.execute_and_update.call_args
         self.assertEqual(call_args.kwargs['signal'], "SELL")
     
+    def test_run_executes_short_signal(self):
+        """测试执行做空信号"""
+        mock_data = create_mock_ohlcv_data(num_bars=30, base_price=100.0)
+        self.mock_data_fetcher.get_latest_bars.return_value = mock_data
+        
+        # 策略返回 SHORT 信号
+        self.mock_strategy.get_signal.return_value = (
+            {"signal": "SHORT", "confidence_score": 8, "reason": "Strong overbought"},
+            100.0
+        )
+        
+        self.engine.run()
+        
+        # 验证 execute_and_update 被调用且信号为 SHORT
+        self.assertTrue(self.mock_position_manager.execute_and_update.called)
+        call_args = self.mock_position_manager.execute_and_update.call_args
+        self.assertEqual(call_args.kwargs['signal'], "SHORT")
+    
+    def test_run_executes_cover_signal(self):
+        """测试执行平空信号"""
+        mock_data = create_mock_ohlcv_data(num_bars=30, base_price=100.0)
+        self.mock_data_fetcher.get_latest_bars.return_value = mock_data
+        
+        # 策略返回 COVER 信号
+        self.mock_strategy.get_signal.return_value = (
+            {"signal": "COVER", "confidence_score": 7, "reason": "Exit short"},
+            100.0
+        )
+        
+        self.engine.run()
+        
+        # 验证 execute_and_update 被调用且信号为 COVER
+        self.assertTrue(self.mock_position_manager.execute_and_update.called)
+        call_args = self.mock_position_manager.execute_and_update.call_args
+        self.assertEqual(call_args.kwargs['signal'], "COVER")
+    
     def test_run_hold_signal_no_execution(self):
         """测试 HOLD 信号不执行交易"""
         mock_data = create_mock_ohlcv_data(num_bars=30, base_price=100.0)

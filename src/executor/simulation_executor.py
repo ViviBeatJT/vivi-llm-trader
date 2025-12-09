@@ -1,118 +1,102 @@
 # src/executor/simulation_executor.py
 
-import pandas as pd
-import numpy as np
-from datetime import datetime
-from typing import Literal, Dict, Any, List
-from src.executor.base_executor import BaseExecutor # 导入基类
+from typing import Dict, Any
+from datetime import datetime, timezone
 
-class SimulationExecutor(BaseExecutor):
+
+class SimulationExecutor:
     """
-    模拟执行器：用于回测环境，**仅负责模拟交易执行和计算费用**。
-    它不管理资金和仓位。
+    模拟交易执行器 - 用于本地回测，不连接真实 API。
+    
+    支持的交易动作：
+    - BUY: 买入开多
+    - SELL: 卖出平多
+    - SHORT: 卖空开空
+    - COVER: 买入平空
     """
 
-    def __init__(self, finance_params: Dict[str, float]):
+    def __init__(self, finance_params: Dict[str, Any]):
         """
-        初始化模拟执行器，加载交易所需的财务参数。
+        初始化模拟执行器。
+        
+        Args:
+            finance_params: 财务参数字典，包含：
+                - COMMISSION_RATE: 佣金率
+                - SLIPPAGE_RATE: 滑点率
         """
-        # 交易执行所需参数
-        self.COMMISSION_RATE = finance_params.get('COMMISSION_RATE', 0.0003)
-        self.SLIPPAGE_RATE = finance_params.get('SLIPPAGE_RATE', 0.0001)
-        self.MIN_LOT_SIZE = finance_params.get('MIN_LOT_SIZE', 100)
-        self.MAX_ALLOCATION = finance_params.get('MAX_ALLOCATION', 0.2)
-        self.STAMP_DUTY_RATE = finance_params.get('STAMP_DUTY_RATE', 0.001)
-
-        print("💡 SimulationExecutor 初始化成功。")
-
-
-    def execute_trade(self,
-                      timestamp: datetime,
-                      signal: Literal["BUY", "SELL"],
-                      current_price: float,
-                      current_position: float,
-                      current_cash: float,
-                      avg_cost: float) -> Dict[str, Any]:
-        """实现 BaseExecutor 接口：模拟交易执行并返回结果。"""
+        self.commission_rate = finance_params.get('COMMISSION_RATE', 0.0003)
+        self.slippage_rate = finance_params.get('SLIPPAGE_RATE', 0.0001)
         
-        if current_price <= 0:
-             return self._fail_result("价格无效。")
-
-        # 始终使用传入的最新资金和仓位状态
-        current_equity = current_cash + (current_position * current_price)
-
-        if signal == 'BUY':
-            return self._execute_buy(current_price, current_cash, current_equity)
+        print(f"🔧 SimulationExecutor 初始化: 佣金={self.commission_rate*100:.2f}%, 滑点={self.slippage_rate*100:.2f}%")
+    
+    def execute(self, 
+               signal: str, 
+               qty: int, 
+               price: float, 
+               ticker: str = "UNKNOWN") -> Dict[str, Any]:
+        """
+        执行模拟交易。
         
-        elif signal == 'SELL' and current_position > 0:
-            return self._execute_sell(current_price, current_position)
+        Args:
+            signal: 交易信号 (BUY, SELL, SHORT, COVER)
+            qty: 交易数量
+            price: 请求价格
+            ticker: 股票代码
             
-        return self._fail_result(f"无执行信号或无仓位可卖 ({signal}).")
-        
-    def _fail_result(self, reason: str) -> Dict[str, Any]:
-        """返回失败的交易结果模板。"""
-        return {
-            'executed': False,
-            'trade_type': 'N/A',
-            'executed_qty': 0.0,
-            'executed_price': 0.0,
-            'fee': 0.0,
-            'log_message': f"模拟交易失败: {reason}"
-        }
-
-    def _execute_buy(self, current_price: float, current_cash: float, current_equity: float) -> Dict[str, Any]:
-        """模拟买入逻辑。"""
-        
-        # 1. 计算最大可用资金 (基于总资产的MAX_ALLOCATION)
-        max_capital_for_trade = current_equity * self.MAX_ALLOCATION
-        available_cash_to_use = min(current_cash, max_capital_for_trade)
-        
-        # 2. 计算可买入数量 (四舍五入到最小交易单位 MIN_LOT_SIZE)
-        qty_to_buy_float = available_cash_to_use / current_price
-        qty_to_buy = np.floor(qty_to_buy_float / self.MIN_LOT_SIZE) * self.MIN_LOT_SIZE
-        
-        if qty_to_buy < self.MIN_LOT_SIZE:
-            return self._fail_result("计算数量低于最小交易单位。")
-
-        # 3. 计算实际成交细节
-        execution_price = current_price * (1 + self.SLIPPAGE_RATE) # 考虑滑点
-        fee = qty_to_buy * execution_price * self.COMMISSION_RATE  # 手续费
-        
-        total_cost = qty_to_buy * execution_price + fee
-        
-        if total_cost <= current_cash:
-            # 交易成功
+        Returns:
+            dict: 执行结果，包含：
+                - success: 是否成功
+                - signal: 执行的信号
+                - qty: 实际成交数量
+                - price: 实际成交价格（考虑滑点）
+                - fee: 交易费用
+                - error: 错误信息（如果有）
+        """
+        if signal not in ['BUY', 'SELL', 'SHORT', 'COVER']:
             return {
-                'executed': True,
-                'trade_type': 'BUY',
-                'executed_qty': qty_to_buy,
-                'executed_price': execution_price,
-                'fee': fee, # 仅手续费
-                'log_message': f"模拟买入 {qty_to_buy:,.0f} 股 @ ${execution_price:.2f}"
+                'success': False,
+                'error': f'Invalid signal: {signal}'
             }
-        else:
-            return self._fail_result("现金不足以支付交易成本。")
-
-    def _execute_sell(self, current_price: float, current_position: float) -> Dict[str, Any]:
-        """模拟卖出逻辑。"""
         
-        qty_to_sell = current_position # 默认卖出全部仓位
+        if qty <= 0:
+            return {
+                'success': False,
+                'error': f'Invalid quantity: {qty}'
+            }
         
-        # 1. 计算实际成交细节
-        execution_price = current_price * (1 - self.SLIPPAGE_RATE) # 考虑滑点
-        income_before_fee = qty_to_sell * execution_price
+        if price <= 0:
+            return {
+                'success': False,
+                'error': f'Invalid price: {price}'
+            }
         
-        # 2. 计算费用 (手续费 + 印花税)
-        commission = income_before_fee * self.COMMISSION_RATE
-        stamp_duty = income_before_fee * self.STAMP_DUTY_RATE 
-        total_fee = commission + stamp_duty
+        # 计算滑点
+        if signal in ['BUY', 'COVER']:
+            # 买入时价格上滑
+            executed_price = price * (1 + self.slippage_rate)
+        else:  # SELL, SHORT
+            # 卖出时价格下滑
+            executed_price = price * (1 - self.slippage_rate)
         
-        # 交易成功
+        # 计算佣金
+        fee = qty * executed_price * self.commission_rate
+        
+        timestamp_str = datetime.now(timezone.utc).strftime('%H:%M:%S')
+        action_emoji = {
+            'BUY': '🟢 买入开多',
+            'SELL': '🔴 卖出平多',
+            'SHORT': '🔻 卖空开空',
+            'COVER': '🔺 买入平空'
+        }.get(signal, signal)
+        
+        print(f"   💱 [{timestamp_str}] {action_emoji} {ticker}: {qty} 股 @ ${executed_price:.2f} (费用: ${fee:.2f})")
+        
         return {
-            'executed': True,
-            'trade_type': 'SELL',
-            'executed_qty': qty_to_sell,
-            'executed_price': execution_price,
-            'fee': total_fee, # 总费用 (手续费 + 印花税)
-            'log_message': f"模拟卖出 {qty_to_sell:,.0f} 股 @ ${execution_price:.2f}"
+            'success': True,
+            'signal': signal,
+            'ticker': ticker,
+            'qty': qty,
+            'price': executed_price,
+            'fee': fee,
+            'timestamp': datetime.now(timezone.utc)
         }
