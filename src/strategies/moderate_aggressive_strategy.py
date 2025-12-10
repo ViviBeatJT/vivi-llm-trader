@@ -182,8 +182,36 @@ class ModerateAggressiveStrategy:
                    new_data: pd.DataFrame,
                    current_position: float = 0.0,
                    avg_cost: float = 0.0,
-                   verbose: bool = True) -> Tuple[Dict, float]:
-        """获取交易信号"""
+                   verbose: bool = True,
+                   is_market_close: bool = False) -> Tuple[Dict, float]:
+        """
+        获取交易信号
+        
+        Args:
+            ticker: 股票代码
+            new_data: 新的 OHLCV DataFrame
+            current_position: 当前持仓
+            avg_cost: 平均成本
+            verbose: 是否打印详细信息
+            is_market_close: 是否是收盘时间（True=强制平仓）
+        
+        Returns:
+            (signal_dict, current_price)
+        """
+        # 🔴 收盘强制平仓！
+        if is_market_close and current_position != 0:
+            close_signal = 'SELL' if current_position > 0 else 'COVER'
+            reason = f"🔔 市场收盘 - 强制平仓！持仓: {current_position:.0f} 股"
+            
+            if verbose:
+                print(f"⚠️ 收盘平仓: {close_signal} | {reason}")
+            
+            return {
+                "signal": close_signal,
+                "confidence_score": 10,
+                "reason": reason
+            }, 0.0
+        
         # 1. 合并数据
         df = self._merge_data(ticker, new_data)
         

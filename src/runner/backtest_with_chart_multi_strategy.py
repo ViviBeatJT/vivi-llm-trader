@@ -122,7 +122,7 @@ STEP_MINUTES = 1          # 每1分钟监控一次
 LOOKBACK_MINUTES = 120    # 每次获取过去120分钟的5分钟K线
 
 # 交易设置
-INITIAL_CAPITAL = 100000.0
+INITIAL_CAPITAL = 20000.0
 SHARES_PER_TRADE = 50
 COMMISSION_PER_TRADE = 1.0
 
@@ -265,12 +265,18 @@ def run_backtest(strategy_name: str = 'moderate'):
             
             # 获取信号
             try:
+                # 🔔 检测是否接近收盘（15:55 之后）
+                # 转换为东部时间检查
+                current_et = current_time.astimezone(pytz.timezone('America/New_York'))
+                is_close_to_market_close = current_et.hour == 15 and current_et.minute >= 55
+                
                 signal_data, _ = strategy.get_signal(
                     ticker=TICKER,
                     new_data=df,
                     current_position=current_position,
                     avg_cost=avg_cost,
-                    verbose=False
+                    verbose=False,
+                    is_market_close=is_close_to_market_close  # 15:55后强制平仓
                 )
                 
                 signal = signal_data['signal']
@@ -357,7 +363,7 @@ def run_backtest(strategy_name: str = 'moderate'):
     else:
         final_price = current_price
     
-    # 获取最终账户状态
+    # 重新获取最终状态
     final_status = position_manager.get_account_status(final_price)
     trade_log = position_manager.get_trade_log()
     
