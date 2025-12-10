@@ -38,10 +38,10 @@ from src.visualization.simple_chart_visualizer import SimpleChartVisualizer
 from src.executor.simulation_executor import SimulationExecutor
 
 # --- 所有策略 ---
-from src.strategies.aggresive_mean_reversion_strategy import AggressiveMeanReversionStrategy
-from src.strategies.moderate_aggresive_strategy import ModerateAggressiveStrategy
+from src.strategies.aggressive_mean_reversion_strategy import AggressiveMeanReversionStrategy
+from src.strategies.moderate_aggressive_strategy import ModerateAggressiveStrategy
 from src.strategies.high_frequency_strategy import HighFrequencyStrategy
-from src.strategies.ultra_aggresive_strategy import UltraAggressiveStrategy
+from src.strategies.ultra_aggressive_strategy import UltraAggressiveStrategy
 
 load_dotenv()
 
@@ -116,7 +116,10 @@ STRATEGY_CONFIGS = {
 # 基本设置
 TICKER = "TSLA"
 TRADING_DATE = "2024-12-05"
-STEP_MINUTES = 1
+
+# 回测设置（与原来保持一致）
+STEP_MINUTES = 1          # 每1分钟监控一次
+LOOKBACK_MINUTES = 120    # 每次获取过去120分钟的5分钟K线
 
 # 交易设置
 INITIAL_CAPITAL = 100000.0
@@ -198,8 +201,8 @@ def run_backtest(strategy_name: str = 'moderate'):
     )
     visualizer.set_initial_capital(INITIAL_CAPITAL)
     
-    # 4. 获取历史数据
-    print(f"\n📥 获取历史数据...")
+    # 4. 获取初始时间范围
+    print(f"\n⏱️ 设置回测时间...")
     
     # 解析日期并设置时间范围
     from datetime import datetime, time as dt_time
@@ -209,164 +212,187 @@ def run_backtest(strategy_name: str = 'moderate'):
     date_parts = [int(x) for x in TRADING_DATE.split('-')]
     
     # 市场时间: 9:30 - 16:00 ET
-    start_dt = US_EASTERN.localize(datetime(date_parts[0], date_parts[1], date_parts[2], 9, 30))
-    end_dt = US_EASTERN.localize(datetime(date_parts[0], date_parts[1], date_parts[2], 16, 0))
+    start_time = US_EASTERN.localize(datetime(date_parts[0], date_parts[1], date_parts[2], 9, 30))
+    end_time = US_EASTERN.localize(datetime(date_parts[0], date_parts[1], date_parts[2], 16, 0))
     
     # 转换为 UTC
-    start_dt = start_dt.astimezone(timezone.utc)
-    end_dt = end_dt.astimezone(timezone.utc)
+    start_time = start_time.astimezone(timezone.utc)
+    end_time = end_time.astimezone(timezone.utc)
     
-    print(f"   时间范围: {TRADING_DATE} 9:30-16:00 ET")
+    print(f"   开始: {start_time.strftime('%Y-%m-%d %H:%M')} UTC (9:30 ET)")
+    print(f"   结束: {end_time.strftime('%Y-%m-%d %H:%M')} UTC (16:00 ET)")
+    print(f"   步进: {STEP_MINUTES} 分钟")
+    print(f"   回看: {LOOKBACK_MINUTES} 分钟（5分钟K线）")
     
-    # 获取整天的数据
-    try:
-        historical_bars = data_fetcher.get_latest_bars(
-            ticker=TICKER,
-            lookback_minutes=450,  # 从9:30到16:00约6.5小时 = 390分钟
-            end_dt=end_dt,
-            timeframe=TimeFrame(5, TimeFrameUnit.Minute)
-        )
-    except Exception as e:
-        print(f"❌ 获取数据失败: {e}")
-        return
-    
-    if historical_bars.empty:
-        print(f"❌ 没有数据！")
-        return
-    
-    print(f"✅ 获取了 {len(historical_bars)} 根 5分钟 K线")
-    print(f"   时间范围: {historical_bars.index[0]} 至 {historical_bars.index[-1]}")
-    
-    # 5. 回测循环
+    # 5. 回测循环（时间驱动）
     print(f"\n🏃 开始回测...")
     print(f"   策略: {strategy_config['name']}")
-    print(f"   图表每次迭代更新")
+    print(f"   每 {STEP_MINUTES} 分钟监控一次")
+    print(f"   每次获取过去 {LOOKBACK_MINUTES} 分钟的5分钟K线")
     print(f"="*70)
     
-    total_bars = len(historical_bars)
+    current_time = start_time
     iteration = 0
     update_count = 0
     
-    for i in range(0, total_bars, STEP_MINUTES):
-        iteration += 1
-        current_time_bars = historical_bars.iloc[:i + 1]
-        
-        if len(current_time_bars) < 20:
-            continue
-        
-        current_time = current_time_bars.index[-1]
-        current_price = current_time_bars.iloc[-1]['close']
-        
-        # 获取当前持仓和权益
-        current_position = position_manager.get_position(TICKER)
-        
-        # 计算当前权益
-        summary = position_manager.get_summary()
-        current_equity = summary.get('total_value', INITIAL_CAPITAL)
-        
-        # 获取平均成本
-        avg_cost = 0
-        if current_position != 0:
-            positions = summary.get('positions', {})
-            if TICKER in positions:
-                avg_cost = positions[TICKER].get('avg_price', 0)
-        
-        # 获取信号
-        signal_data, _ = strategy.get_signal(
-            ticker=TICKER,
-            new_data=current_time_bars.tail(1),
-            current_position=current_position,
-            avg_cost=avg_cost,
-            verbose=False
-        )
-        
-        signal = signal_data['signal']
-        
-        # 执行交易
-        if signal in ['BUY', 'SELL', 'SHORT', 'COVER']:
+    try:
+        while current_time <= end_time:
+            iteration += 1
+            
+            # 确保时区
+            if current_time.tzinfo is None:
+                current_time = current_time.replace(tzinfo=timezone.utc)
+            
+            # 获取截至当前时间的数据（过去120分钟的5分钟K线）
+            df = data_fetcher.get_latest_bars(
+                ticker=TICKER,
+                lookback_minutes=LOOKBACK_MINUTES,
+                end_dt=current_time,
+                timeframe=TimeFrame(5, TimeFrameUnit.Minute)
+            )
+            
+            if df.empty:
+                current_time += timedelta(minutes=STEP_MINUTES)
+                continue
+            
+            current_price = df.iloc[-1]['close']
+            
+            # 获取当前账户状态
+            account_status = position_manager.get_account_status(current_price)
+            current_position = account_status.get('position', 0.0)
+            avg_cost = account_status.get('avg_cost', 0.0)
+            current_equity = account_status.get('equity', INITIAL_CAPITAL)
+            
+            # 获取信号
             try:
-                result = executor.execute_order(
+                signal_data, _ = strategy.get_signal(
                     ticker=TICKER,
-                    action=signal,
-                    shares=SHARES_PER_TRADE,
-                    current_price=current_price,
-                    timestamp=current_time
+                    new_data=df,
+                    current_position=current_position,
+                    avg_cost=avg_cost,
+                    verbose=False
                 )
                 
-                if result and result.get('status') == 'success':
+                signal = signal_data['signal']
+                
+                # 执行交易
+                if signal in ['BUY', 'SELL', 'SHORT', 'COVER']:
                     emoji = {"BUY": "🟢", "SELL": "🔴", "SHORT": "🔻", "COVER": "🔺"}
                     print(f"\n{emoji.get(signal, '⚪')} {current_time.strftime('%H:%M')} | "
-                          f"{signal} @ ${current_price:.2f} x {SHARES_PER_TRADE}")
+                          f"{signal} @ ${current_price:.2f}")
                     print(f"   {signal_data.get('reason', 'N/A')}")
-            except Exception as e:
-                print(f"⚠️ 交易执行失败: {e}")
-        
-        # 更新图表
-        strategy_df = strategy.get_history_data(TICKER)
-        trade_log = position_manager.get_all_trades()  # 使用正确的方法
-        # current_equity 已在上面计算过了
-        
-        if not strategy_df.empty:
-            # 首次更新检查数据
-            if update_count == 0:
-                print(f"\n🔍 策略数据诊断:")
-                print(f"   数据行数: {len(strategy_df)}")
-                
-                bb_cols = ['SMA', 'BB_UPPER', 'BB_LOWER']
-                for col in bb_cols:
-                    if col in strategy_df.columns:
-                        valid_count = strategy_df[col].notna().sum()
-                        print(f"   ✅ {col}: {valid_count} 有效值")
-                    else:
-                        print(f"   ❌ {col}: 不存在！")
+                    
+                    # 使用 position_manager 的方法执行交易
+                    position_manager.execute_and_update(
+                        timestamp=current_time,
+                        signal=signal,
+                        current_price=current_price,
+                        ticker=TICKER
+                    )
             
-            visualizer.update_data(
-                market_data=strategy_df,
-                trade_log=trade_log,
-                current_equity=current_equity,
-                current_position=current_position,
-                timestamp=current_time
-            )
-            update_count += 1
-        
-        # 进度显示
-        if iteration % 50 == 0:
-            progress = (i / total_bars) * 100
-            print(f"\n📊 进度: {progress:.0f}% | 迭代: {iteration}")
-            print(f"   权益: ${current_equity:,.0f} | 持仓: {current_position}")
+            except Exception as e:
+                print(f"❌ 策略错误: {e}")
+                current_time += timedelta(minutes=STEP_MINUTES)
+                continue
+            
+            # 更新图表
+            strategy_df = strategy.get_history_data(TICKER)
+            trade_log = position_manager.get_trade_log()
+            
+            if not strategy_df.empty:
+                # 首次更新检查数据
+                if update_count == 0:
+                    print(f"\n🔍 策略数据诊断:")
+                    print(f"   数据行数: {len(strategy_df)}")
+                    
+                    bb_cols = ['SMA', 'BB_UPPER', 'BB_LOWER']
+                    for col in bb_cols:
+                        if col in strategy_df.columns:
+                            valid_count = strategy_df[col].notna().sum()
+                            print(f"   ✅ {col}: {valid_count} 有效值")
+                        else:
+                            print(f"   ❌ {col}: 不存在！")
+                
+                visualizer.update_data(
+                    market_data=strategy_df,
+                    trade_log=trade_log,
+                    current_equity=current_equity,
+                    current_position=current_position,
+                    timestamp=current_time
+                )
+                update_count += 1
+            
+            # 进度显示
+            if iteration % 10 == 0:
+                progress = (current_time - start_time) / (end_time - start_time) * 100
+                print(f"\n📊 进度: {progress:.1f}% | 迭代: {iteration} | 图表更新: {update_count}")
+                print(f"   权益: ${current_equity:,.0f} | 持仓: {current_position}")
+            
+            # 前进1分钟
+            current_time += timedelta(minutes=STEP_MINUTES)
     
-    # 6. 最终结果
+    except KeyboardInterrupt:
+        print("\n⚠️ 用户中断回测")
+    
+    # 最终更新
+    print(f"\n✅ 回测循环完成！")
     print(f"\n" + "="*70)
     print(f"📊 回测结果 - {strategy_config['name']}")
     print("="*70)
     
-    final_price = historical_bars.iloc[-1]['close']
+    final_time = end_time
+    strategy_df = strategy.get_history_data(TICKER)
+    trade_log = position_manager.get_trade_log()
+    
+    # 获取最终价格
+    df_final = data_fetcher.get_latest_bars(
+        ticker=TICKER,
+        lookback_minutes=LOOKBACK_MINUTES,
+        end_dt=final_time,
+        timeframe=TimeFrame(5, TimeFrameUnit.Minute)
+    )
+    
+    if not df_final.empty:
+        final_price = df_final.iloc[-1]['close']
+    else:
+        final_price = current_price
     
     # 获取最终账户状态
-    summary = position_manager.get_summary()
-    trade_log = position_manager.get_all_trades()
+    final_status = position_manager.get_account_status(final_price)
+    trade_log = position_manager.get_trade_log()
     
-    final_equity = summary.get('total_value', INITIAL_CAPITAL)
-    total_pnl = final_equity - INITIAL_CAPITAL
-    total_pnl_pct = (total_pnl / INITIAL_CAPITAL) * 100
+    final_equity = final_status.get('equity', INITIAL_CAPITAL)
+    total_pnl = final_status.get('total_pnl', 0)
+    total_pnl_pct = final_status.get('total_pnl_pct', 0)
     
     print(f"\n💰 资金情况:")
     print(f"   初始资金: ${INITIAL_CAPITAL:,.2f}")
     print(f"   最终权益: ${final_equity:,.2f}")
     print(f"   盈亏: ${total_pnl:,.2f} ({total_pnl_pct:+.2f}%)")
-    print(f"   现金: ${summary.get('cash', 0):,.2f}")
+    print(f"   现金: ${final_status.get('cash', 0):,.2f}")
+    print(f"   持仓: {final_status.get('position', 0)} 股")
     
     print(f"\n📈 交易统计:")
-    print(f"   总交易数: {len(trade_log) if trade_log else 0}")
     
-    if trade_log and len(trade_log) > 0:
-        # 计算完成的交易
-        sell_trades = [t for t in trade_log if t.get('action') in ['SELL', 'COVER']]
-        if sell_trades:
-            winning_trades = [t for t in sell_trades if t.get('pnl', 0) > 0]
-            win_rate = len(winning_trades) / len(sell_trades) * 100
-            print(f"   完成交易: {len(sell_trades)}")
-            print(f"   胜率: {win_rate:.1f}%")
+    if not trade_log.empty:
+        print(f"   总交易数: {len(trade_log)}")
+        
+        # 计算完成的交易（检查列名）
+        if 'type' in trade_log.columns:
+            completed_trades = trade_log[trade_log['type'].isin(['SELL', 'COVER'])]
+            if not completed_trades.empty and 'net_pnl' in completed_trades.columns:
+                winning_trades = completed_trades[completed_trades['net_pnl'] > 0]
+                win_rate = len(winning_trades) / len(completed_trades) * 100
+                print(f"   完成交易: {len(completed_trades)}")
+                print(f"   胜率: {win_rate:.1f}%")
+                
+                if len(winning_trades) > 0:
+                    print(f"   平均盈利: ${winning_trades['net_pnl'].mean():.2f}")
+                losing_trades = completed_trades[completed_trades['net_pnl'] < 0]
+                if len(losing_trades) > 0:
+                    print(f"   平均亏损: ${losing_trades['net_pnl'].mean():.2f}")
+    else:
+        print(f"   总交易数: 0")
     
     print(f"\n📊 图表:")
     print(f"   文件: {chart_file}")
