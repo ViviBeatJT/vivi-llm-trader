@@ -1,4 +1,4 @@
-# src/live/live_engine.py
+# src/engine/live_engine.py
 
 import time
 import signal
@@ -222,12 +222,24 @@ class LiveEngine:
             print(f"⚠️ [{now_et.strftime('%H:%M:%S')}] 无市场数据，跳过本次迭代")
             return False
         
-        # 2. 调用策略
+        # 2. 获取当前持仓状态
+        account_status = self.position_manager.get_account_status(current_price)
+        current_position = account_status.get('position', 0.0)
+        avg_cost = account_status.get('avg_cost', 0.0)
+        
+        # 3. 调用策略
         try:
+            # 🔔 检测是否接近收盘
+            is_close_to_market_close = now_et.hour == 15 and now_et.minute >= 55
+            
             signal_data, strategy_price = self.strategy.get_signal(
                 ticker=self.ticker,
                 new_data=market_data,
-                verbose=True
+                current_position=current_position,
+                avg_cost=avg_cost,
+                verbose=True,
+                is_market_close=is_close_to_market_close,  # 15:55后强制平仓
+                current_time_et=now_et  # 传递当前时间，用于15:50检查
             )
             
             signal = signal_data.get('signal', 'HOLD')
@@ -239,16 +251,18 @@ class LiveEngine:
                 
         except Exception as e:
             print(f"❌ [{now_et.strftime('%H:%M:%S')}] 策略错误: {e}")
+            import traceback
+            traceback.print_exc()
             return False
         
-        # 3. 执行信号回调（如果有）
+        # 4. 执行信号回调（如果有）
         if self.on_signal_callback:
             try:
                 self.on_signal_callback(signal_data, current_price, now_utc)
             except Exception as e:
                 print(f"⚠️ 信号回调错误: {e}")
         
-        # 4. 执行交易
+        # 5. 执行交易
         if signal in ["BUY", "SELL", "SHORT", "COVER"]:
             self._signal_count += 1
             signal_emoji = {"BUY": "🟢", "SELL": "🔴", "SHORT": "🔻", "COVER": "🔺"}.get(signal, "⚪")
@@ -259,7 +273,8 @@ class LiveEngine:
             trade_result = self.position_manager.execute_and_update(
                 timestamp=now_utc,
                 signal=signal,
-                current_price=current_price
+                current_price=current_price,
+                ticker=self.ticker  # 🔥 修复：添加 ticker 参数
             )
             
             if trade_result:
@@ -267,7 +282,7 @@ class LiveEngine:
             else:
                 print(f"   ❌ 交易执行失败")
         
-        # 5. 打印状态
+        # 6. 打印状态
         self._log_status(current_price)
         
         return True
@@ -380,7 +395,7 @@ class LiveEngine:
             'runtime_seconds': runtime_seconds,
             'iterations': self._iteration_count,
             'signals': self._signal_count,
-            'trades_executed': len(trade_log) if trade_log is not None else 0,
+            'trades_executed': len(trade_log) if trade_log is not None and not trade_log.empty else 0,
             'final_equity': final_status['equity'],
             'final_cash': final_status['cash'],
             'final_position': final_status['position'],

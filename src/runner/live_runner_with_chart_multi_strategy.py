@@ -84,7 +84,7 @@ STRATEGY_CONFIGS = {
             'stop_loss_threshold': 0.10,
             'monitor_interval_seconds': 60,
         },
-        'chart_file': 'live_moderate.html',
+        'chart_file': 'live_moderate' +  '.html' ,
         'description': '接近布林带就交易，捕捉更多机会（推荐）'
     },
     'moderate_dynamic': {
@@ -157,11 +157,11 @@ STRATEGY_CONFIGS = {
 
 # 财务参数
 FINANCE_PARAMS = {
-    'INITIAL_CAPITAL': 100000.0,
+    'INITIAL_CAPITAL': 200000.00,
     'COMMISSION_RATE': 0.0003,
     'SLIPPAGE_RATE': 0.0001,
     'MIN_LOT_SIZE': 10,
-    'MAX_ALLOCATION': 0.95,  # 💰 提高到95%，最大化资金利用率
+    'MAX_ALLOCATION': 0.01,  # 💰 提高到95%，最大化资金利用率
     'STAMP_DUTY_RATE': 0.001,
 }
 
