@@ -183,7 +183,8 @@ class ModerateAggressiveStrategy:
                    current_position: float = 0.0,
                    avg_cost: float = 0.0,
                    verbose: bool = True,
-                   is_market_close: bool = False) -> Tuple[Dict, float]:
+                   is_market_close: bool = False,
+                   current_time_et: pd.Timestamp = None) -> Tuple[Dict, float]:
         """
         获取交易信号
         
@@ -194,6 +195,7 @@ class ModerateAggressiveStrategy:
             avg_cost: 平均成本
             verbose: 是否打印详细信息
             is_market_close: 是否是收盘时间（True=强制平仓）
+            current_time_et: 当前东部时间（用于判断是否接近收盘）
         
         Returns:
             (signal_dict, current_price)
@@ -211,6 +213,17 @@ class ModerateAggressiveStrategy:
                 "confidence_score": 10,
                 "reason": reason
             }, 0.0
+        
+        # 🚫 15:50后禁止新开仓（只允许平仓）
+        if current_time_et is not None:
+            if current_time_et.hour == 15 and current_time_et.minute >= 50:
+                # 如果有持仓，允许平仓信号
+                if current_position == 0:
+                    return {
+                        "signal": "HOLD",
+                        "confidence_score": 0,
+                        "reason": "⏰ 接近收盘，禁止新开仓"
+                    }, 0.0
         
         # 1. 合并数据
         df = self._merge_data(ticker, new_data)

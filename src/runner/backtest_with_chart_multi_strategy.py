@@ -42,6 +42,7 @@ from src.strategies.aggressive_mean_reversion_strategy import AggressiveMeanReve
 from src.strategies.moderate_aggressive_strategy import ModerateAggressiveStrategy
 from src.strategies.high_frequency_strategy import HighFrequencyStrategy
 from src.strategies.ultra_aggressive_strategy import UltraAggressiveStrategy
+from src.strategies.moderate_aggressive_dynamic_strategy import ModerateAggressiveDynamicStrategy
 
 load_dotenv()
 
@@ -76,6 +77,23 @@ STRATEGY_CONFIGS = {
         },
         'chart_file': 'backtest_moderate.html',
         'description': '接近布林带就交易，捕捉更多机会'
+    },
+    'moderate_dynamic': {
+        'class': ModerateAggressiveDynamicStrategy,
+        'name': '动态阈值温和进取策略',
+        'params': {
+            'bb_period': 20,
+            'bb_std_dev': 2.0,
+            'base_entry_threshold': 0.85,       # 正常波动阈值
+            'aggressive_entry_threshold': 0.70,  # 横盘期阈值
+            'exit_threshold': 0.60,
+            'stop_loss_threshold': 0.10,
+            'high_volatility_threshold': 0.02,   # 2% 波动
+            'low_volatility_threshold': 0.01,    # 1% 波动
+            'monitor_interval_seconds': 60,
+        },
+        'chart_file': 'backtest_moderate_dynamic.html',
+        'description': '动态调整阈值，横盘期也能交易'
     },
     'high_freq': {
         'class': HighFrequencyStrategy,
@@ -115,15 +133,15 @@ STRATEGY_CONFIGS = {
 
 # 基本设置
 TICKER = "TSLA"
-TRADING_DATE = "2024-12-05"
+TRADING_DATE = "2025-12-05"
 
-# 回测设置（与原来保持一致）
+# 回测设置
 STEP_MINUTES = 1          # 每1分钟监控一次
-LOOKBACK_MINUTES = 120    # 每次获取过去120分钟的5分钟K线
+LOOKBACK_MINUTES = 300    # 增加到300分钟（5小时），确保从开盘第一分钟就有数据
 
 # 交易设置
-INITIAL_CAPITAL = 20000.0
-SHARES_PER_TRADE = 50
+INITIAL_CAPITAL = 1000.0
+SHARES_PER_TRADE = 1
 COMMISSION_PER_TRADE = 1.0
 
 # 图表设置
@@ -181,8 +199,13 @@ def run_backtest(strategy_name: str = 'moderate'):
         'COMMISSION_RATE': 0.0003,
         'SLIPPAGE_RATE': 0.0001,
         'MIN_LOT_SIZE': SHARES_PER_TRADE,
-        'MAX_ALLOCATION': 0.2,
+        'MAX_ALLOCATION': 0.95,  # 💰 提高到95%，最大化资金利用率
     }
+    
+    print(f"   初始资金: ${INITIAL_CAPITAL:,.0f}")
+    print(f"   每笔交易: {SHARES_PER_TRADE} 股")
+    print(f"   最大仓位: {FINANCE_PARAMS['MAX_ALLOCATION']*100:.0f}%")
+    print(f"   回看窗口: {LOOKBACK_MINUTES} 分钟")
     
     cache = TradingCache()
     data_fetcher = AlpacaDataFetcher()
@@ -265,7 +288,7 @@ def run_backtest(strategy_name: str = 'moderate'):
             
             # 获取信号
             try:
-                # 🔔 检测是否接近收盘（15:55 之后）
+                # 🔔 检测是否接近收盘
                 # 转换为东部时间检查
                 current_et = current_time.astimezone(pytz.timezone('America/New_York'))
                 is_close_to_market_close = current_et.hour == 15 and current_et.minute >= 55
@@ -276,7 +299,8 @@ def run_backtest(strategy_name: str = 'moderate'):
                     current_position=current_position,
                     avg_cost=avg_cost,
                     verbose=False,
-                    is_market_close=is_close_to_market_close  # 15:55后强制平仓
+                    is_market_close=is_close_to_market_close,  # 15:55后强制平仓
+                    current_time_et=current_et  # 传递当前时间，用于15:50检查
                 )
                 
                 signal = signal_data['signal']
