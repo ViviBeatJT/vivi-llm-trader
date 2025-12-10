@@ -270,6 +270,9 @@ class AggressiveMeanReversionStrategy(BaseStrategy):
         # 2. 计算布林带指标
         df = self._calculate_bollinger_bands(df)
         
+        # 🔧 关键修复：立即更新历史数据（包含布林带指标）
+        self._history_data[ticker] = df.copy()
+        
         # 3. 获取有效数据（去除 NaN）
         df_valid = df.dropna()
         

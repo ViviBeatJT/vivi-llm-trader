@@ -199,6 +199,30 @@ try:
         trade_log = position_manager.get_trade_log()
         
         if not strategy_df.empty:
+            # 🔍 调试：检查数据列（仅第一次）
+            if update_count == 0:
+                print(f"\n🔍 策略数据诊断（第一次更新）:")
+                print(f"   数据行数: {len(strategy_df)}")
+                print(f"   数据列: {strategy_df.columns.tolist()}")
+                
+                # 检查布林带列
+                bb_cols = ['SMA', 'BB_UPPER', 'BB_LOWER']
+                for col in bb_cols:
+                    if col in strategy_df.columns:
+                        valid_count = strategy_df[col].notna().sum()
+                        print(f"   ✅ {col}: {valid_count}/{len(strategy_df)} 有效值")
+                        if valid_count > 0:
+                            print(f"      范围: {strategy_df[col].min():.2f} - {strategy_df[col].max():.2f}")
+                    else:
+                        print(f"   ❌ {col}: 列不存在！")
+                
+                # 显示最后一行
+                print(f"\n   最后一行数据:")
+                if all(col in strategy_df.columns for col in bb_cols):
+                    print(strategy_df[['close', 'SMA', 'BB_UPPER', 'BB_LOWER']].tail(1))
+                else:
+                    print(f"   ⚠️ 布林带列缺失，无法显示")
+            
             visualizer.update_data(
                 market_data=strategy_df,
                 trade_log=trade_log,
