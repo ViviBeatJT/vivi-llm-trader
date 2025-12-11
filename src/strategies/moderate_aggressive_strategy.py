@@ -1,19 +1,20 @@
-# src/strategies/moderate_aggressive_strategy.py (IMPROVED VERSION)
+# src/strategies/moderate_aggressive_strategy.py (FIXED VERSION)
 
 """
 温和进取策略 - Moderate Aggressive Mean Reversion
-改进版 - 强化收盘管理
+修复版 - 防止重复开仓 + 强化收盘管理
+
+🔥 关键修复：
+1. **防止重复开仓**：有持仓时优先考虑平仓，不会重复开仓
+2. **逻辑优先级**：止损 > 时间窗口 > 平仓 > 开仓
+3. **持仓状态检查**：有持仓时返回 HOLD，等待平仓信号
+4. **收盘管理**：15:50后禁止开新仓，15:55强制平仓
 
 核心改进：
 1. 接近布林带边界就开仓（不必完全突破）
 2. 回调到 60% 位置就平仓（不必回到中线）
 3. 可调节的灵敏度参数
-4. ✨ 强化的收盘时间管理：
-   - 15:50后禁止开新仓（BUY/SHORT）
-   - 15:55后强制平仓（SELL/COVER）
-   - 多重安全检查确保不留隔夜仓
-
-适合：18:20 这种接近但未突破的情况
+4. 强化的收盘时间管理
 """
 
 from typing import Dict, Tuple, Optional
@@ -23,7 +24,7 @@ import numpy as np
 
 class ModerateAggressiveStrategy:
     """
-    温和进取型均值回归策略（改进版）
+    温和进取型均值回归策略（修复版 - 防止重复开仓）
     
     交易规则：
     - 价格 > 布林带宽度 85% → SHORT（例：接近上轨）
@@ -31,16 +32,15 @@ class ModerateAggressiveStrategy:
     - 价格 < 布林带宽度 15% → BUY（例：接近下轨）
     - 多仓价格上涨到 40% → SELL
     
+    🔥 防止重复开仓逻辑：
+    - 有空仓时：只能 COVER 或 HOLD，不能再 SHORT
+    - 有多仓时：只能 SELL 或 HOLD，不能再 BUY
+    - 无持仓时：才允许 BUY 或 SHORT
+    
     收盘管理：
     - 15:50后：禁止开新仓（BUY/SHORT），只允许平仓（SELL/COVER）
     - 15:55后：强制平仓所有持仓
     - 16:00前：确保持仓为0
-    
-    示例（以你的 18:20 数据）：
-    - BB Upper: $373.38, Middle: $370.89, Lower: $368.41
-    - 布林带宽度: $4.97
-    - 85% 线: $371.81（超过此价格就做空）
-    - 15% 线: $369.16（低于此价格就做多）← 18:20 的 $369.04 会触发！
     """
     
     def __init__(self,
@@ -51,7 +51,7 @@ class ModerateAggressiveStrategy:
                  stop_loss_threshold: float = 0.10,
                  monitor_interval_seconds: int = 60,
                  max_history_bars: int = 500,
-                 # ✨ 新增：收盘时间控制
+                 # 收盘时间控制
                  no_new_entry_time: int = 15 * 60 + 50,  # 15:50 (minutes from midnight)
                  force_close_time: int = 15 * 60 + 55):  # 15:55 (minutes from midnight)
         """
@@ -80,13 +80,13 @@ class ModerateAggressiveStrategy:
         self.monitor_interval_seconds = monitor_interval_seconds
         self.max_history_bars = max_history_bars
         
-        # ✨ 收盘时间控制
+        # 收盘时间控制
         self.no_new_entry_time = no_new_entry_time
         self.force_close_time = force_close_time
         
         self._history_data: Dict[str, pd.DataFrame] = {}
         
-        print(f"📊 温和进取策略初始化 (改进版):")
+        print(f"📊 温和进取策略初始化 (修复版 - 防止重复开仓):")
         print(f"   开仓阈值: {entry_threshold*100:.0f}%")
         print(f"   平仓阈值: {exit_threshold*100:.0f}%")
         print(f"   止损阈值: {stop_loss_threshold*100:.0f}%")
@@ -130,7 +130,7 @@ class ModerateAggressiveStrategy:
         df['BB_UPPER'] = df['SMA'] + (df['STD'] * self.bb_std_dev)
         df['BB_LOWER'] = df['SMA'] - (df['STD'] * self.bb_std_dev)
         
-        # 🔥 新增：计算布林带内的位置（0-1）
+        # 计算布林带内的位置（0-1）
         df['BB_WIDTH'] = df['BB_UPPER'] - df['BB_LOWER']
         df['BB_POSITION'] = (df['close'] - df['BB_LOWER']) / df['BB_WIDTH']
         # BB_POSITION = 0 → 在下轨
@@ -173,7 +173,7 @@ class ModerateAggressiveStrategy:
                         avg_cost: float = 0.0,
                         current_time_et: pd.Timestamp = None) -> Tuple[str, int, str]:
         """
-        根据布林带位置生成信号（改进版）
+        根据布林带位置生成信号（修复版 - 防止重复开仓）
         
         Args:
             bb_position: 价格在布林带中的位置（0-1）
@@ -204,11 +204,31 @@ class ModerateAggressiveStrategy:
             time_str = f"{current_time_et.hour:02d}:{current_time_et.minute:02d}" if current_time_et else "N/A"
             return "HOLD", 0, f"⏰ {time_str} 禁止新开仓（15:50后）"
         
-        # ===== 根据布林带位置交易 =====
+        # ===== 🔴 优先级3：已有持仓，先考虑平仓 =====
         
-        # 🔥 接近上轨 → 做空
+        # 🔥 空仓回调 → 平空（优先处理平仓）
+        if current_position < 0:
+            if bb_position < self.exit_threshold:
+                return "COVER", 7, (f"空仓获利平仓！位置回到 {bb_position*100:.1f}% "
+                                   f"(目标 {self.exit_threshold*100:.0f}%)")
+            else:
+                # 有空仓但不满足平仓条件 → HOLD（防止重复开仓）
+                return "HOLD", 3, f"持有空仓 {abs(current_position):.0f} 股，等待平仓信号"
+        
+        # 🔥 多仓回调 → 平多（优先处理平仓）
+        if current_position > 0:
+            if bb_position > (1 - self.exit_threshold):
+                return "SELL", 7, (f"多仓获利平仓！位置回到 {bb_position*100:.1f}% "
+                                  f"(目标 {(1-self.exit_threshold)*100:.0f}%)")
+            else:
+                # 有多仓但不满足平仓条件 → HOLD（防止重复开仓）
+                return "HOLD", 3, f"持有多仓 {current_position:.0f} 股，等待平仓信号"
+        
+        # ===== 优先级4：无持仓时考虑开仓 =====
+        
+        # 🔥 接近上轨 → 做空（仅在无持仓时）
         if bb_position > self.entry_threshold:
-            if current_position <= 0:  # 空仓或无仓位
+            if current_position == 0:  # 确保无持仓
                 # ✨ 检查时间窗口
                 if in_no_entry_window:
                     return "HOLD", 0, f"⏰ 15:50后禁止新开空仓"
@@ -216,27 +236,15 @@ class ModerateAggressiveStrategy:
                 return "SHORT", 8, (f"价格接近上轨！位置 {bb_position*100:.1f}% "
                                    f"(${price:.2f} vs 阈值 {self.entry_threshold*100:.0f}%)")
         
-        # 🔥 空仓回调 → 平空
-        if current_position < 0:
-            if bb_position < self.exit_threshold:
-                return "COVER", 7, (f"空仓获利平仓！位置回到 {bb_position*100:.1f}% "
-                                   f"(目标 {self.exit_threshold*100:.0f}%)")
-        
-        # 🔥 接近下轨 → 做多
+        # 🔥 接近下轨 → 做多（仅在无持仓时）
         if bb_position < (1 - self.entry_threshold):
-            if current_position >= 0:  # 多仓或无仓位
+            if current_position == 0:  # 确保无持仓
                 # ✨ 检查时间窗口
                 if in_no_entry_window:
                     return "HOLD", 0, f"⏰ 15:50后禁止新开多仓"
                 
                 return "BUY", 8, (f"价格接近下轨！位置 {bb_position*100:.1f}% "
                                  f"(${price:.2f} vs 阈值 {(1-self.entry_threshold)*100:.0f}%)")
-        
-        # 🔥 多仓回调 → 平多
-        if current_position > 0:
-            if bb_position > (1 - self.exit_threshold):
-                return "SELL", 7, (f"多仓获利平仓！位置回到 {bb_position*100:.1f}% "
-                                  f"(目标 {(1-self.exit_threshold)*100:.0f}%)")
         
         # 持有
         return "HOLD", 3, f"价格在区间内 {bb_position*100:.1f}%"
@@ -252,7 +260,7 @@ class ModerateAggressiveStrategy:
                    is_market_close: bool = False,
                    current_time_et: pd.Timestamp = None) -> Tuple[Dict, float]:
         """
-        获取交易信号（改进版）
+        获取交易信号（修复版 - 防止重复开仓）
         
         Args:
             ticker: 股票代码
@@ -322,9 +330,16 @@ class ModerateAggressiveStrategy:
         # 4. 获取有效数据
         df_valid = df.dropna()
         
-        if df_valid.empty or len(df_valid) < self.bb_period:
+        if df_valid.empty:
             if verbose:
-                print(f"❌ 数据不足（需要 {self.bb_period} 条）")
+                print(f"❌ 数据不足（总共 {len(df)} 条，有效 0 条，需要至少 {self.bb_period} 条）")
+            return {"signal": "HOLD", "confidence_score": 0, "reason": "数据不足"}, 0.0
+        
+        # 🔥 修复：只要有至少1条有效数据就可以交易
+        # 布林带计算后，前 bb_period-1 条会是 NaN，只要最后一条有效即可
+        if len(df_valid) < 1:
+            if verbose:
+                print(f"❌ 没有有效数据（总共 {len(df)} 条，有效 {len(df_valid)} 条）")
             return {"signal": "HOLD", "confidence_score": 0, "reason": "数据不足"}, 0.0
         
         # 5. 获取最新数据
@@ -340,7 +355,7 @@ class ModerateAggressiveStrategy:
             latest['BB_POSITION'],
             current_position,
             avg_cost,
-            current_time_et  # ✨ 传入时间
+            current_time_et
         )
         
         # ===== 🔴 最终过滤：15:50后禁止BUY/SHORT =====

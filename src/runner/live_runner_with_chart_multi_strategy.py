@@ -1,32 +1,18 @@
-# src/runner/live_runner_with_chart_multi_strategy.py
+# src/runner/live_runner_with_chart.py
 
 """
-实盘交易运行器 - 支持多策略和实时图表（改进版）
+实盘交易运行器 - 带实时图表（简化版）
 
-✨ 改进点：
-1. 15:55后自动强制平仓（在LiveEngine中实现）
-2. 16:00市场收盘后停止运行
-3. 最终持仓安全检查
-4. 简化代码，逻辑更清晰
-
-支持策略：
-1. conservative - 原始保守策略
-2. moderate - 温和进取策略（推荐）
-3. moderate_dynamic - 动态阈值温和进取策略
-4. high_freq - 高频交易策略
-5. ultra - 超激进策略
-6. mean_reversion - 均值回归策略
+✨ 特点：
+1. 保持原 live_runner.py 的简洁逻辑
+2. 添加实时图表可视化
+3. 支持命令行参数选择策略和股票
+4. 自动收盘平仓保护（15:55）
+5. 防止重复开仓的安全检查
 
 用法：
-    python live_runner.py --strategy moderate --ticker TSLA --mode paper
-    python live_runner.py --strategy moderate_dynamic --ticker AAPL --mode simulation
-    
-特点：
-- 命令行选择策略和股票
-- 实时图表更新
-- 支持模拟盘/实盘/本地模拟
-- 自动刷新图表
-- ✨ 自动收盘平仓保护
+    python live_runner_with_chart.py --strategy mean_reversion --ticker TSLA --mode paper
+    python live_runner_with_chart.py --strategy moderate --ticker AAPL --mode simulation
 """
 
 from datetime import datetime, timezone, time as dt_time
@@ -45,107 +31,28 @@ from src.data_fetcher.alpaca_data_fetcher import AlpacaDataFetcher
 from src.engine.live_engine import LiveEngine
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 
-# ✨ Time utilities
+# --- Time utilities ---
 from src.utils.market_time_utils import DEFAULT_FORCE_CLOSE_TIME, format_time_et
 
-# --- Simple Chart Visualizer ---
+# --- Chart Visualizer ---
 from src.visualization.simple_chart_visualizer import SimpleChartVisualizer
 
 # --- Executors ---
 from src.executor.simulation_executor import SimulationExecutor
 from src.executor.alpaca_trade_executor import AlpacaExecutor
 
-# --- 所有策略 ---
+# --- Strategies ---
 from src.strategies.mean_reversion_strategy import MeanReversionStrategy
-from src.strategies.aggressive_mean_reversion_strategy import AggressiveMeanReversionStrategy
 from src.strategies.moderate_aggressive_strategy import ModerateAggressiveStrategy
-from src.strategies.high_frequency_strategy import HighFrequencyStrategy
-from src.strategies.ultra_aggressive_strategy import UltraAggressiveStrategy
-from src.strategies.moderate_aggressive_dynamic_strategy import ModerateAggressiveDynamicStrategy
+from src.strategies.trend_aware_strategy import TrendAwareStrategy
 
 load_dotenv()
-
-US_EASTERN = pytz.timezone('America/New_York')
 
 # ==========================================
 # 1. 策略配置
 # ==========================================
 
 STRATEGY_CONFIGS = {
-    'conservative': {
-        'class': AggressiveMeanReversionStrategy,
-        'name': '原始保守策略',
-        'params': {
-            'bb_period': 20,
-            'bb_std_dev': 2.0,
-            'stop_loss_threshold': 0.10,
-            'monitor_interval_seconds': 60,
-        },
-        'chart_file': 'live_conservative.html',
-        'description': '只在完全突破布林带时交易'
-    },
-    'moderate': {
-        'class': ModerateAggressiveStrategy,
-        'name': '温和进取策略',
-        'params': {
-            'bb_period': 20,
-            'bb_std_dev': 2.0,
-            'entry_threshold': 0.85,      # 85% 开仓
-            'exit_threshold': 0.60,       # 60% 平仓
-            'stop_loss_threshold': 0.10,
-            'monitor_interval_seconds': 60,
-        },
-        'chart_file': 'live_moderate.html',
-        'description': '接近布林带就交易，捕捉更多机会（推荐）'
-    },
-    'moderate_dynamic': {
-        'class': ModerateAggressiveDynamicStrategy,
-        'name': '动态阈值温和进取策略',
-        'params': {
-            'bb_period': 20,
-            'bb_std_dev': 2.0,
-            'base_entry_threshold': 0.85,
-            'aggressive_entry_threshold': 0.70,
-            'exit_threshold': 0.60,
-            'stop_loss_threshold': 0.10,
-            'high_volatility_threshold': 0.02,
-            'low_volatility_threshold': 0.01,
-            'monitor_interval_seconds': 60,
-        },
-        'chart_file': 'live_moderate_dynamic.html',
-        'description': '动态调整阈值，横盘期也能交易'
-    },
-    'high_freq': {
-        'class': HighFrequencyStrategy,
-        'name': '高频交易策略',
-        'params': {
-            'bb_period': 20,
-            'bb_std_dev': 2.0,
-            'strong_entry': 0.90,
-            'mild_entry': 0.75,
-            'exit_threshold': 0.65,
-            'stop_loss_threshold': 0.08,
-            'monitor_interval_seconds': 60,
-        },
-        'chart_file': 'live_high_freq.html',
-        'description': '在布林带内部也交易'
-    },
-    'ultra': {
-        'class': UltraAggressiveStrategy,
-        'name': '超激进动态策略',
-        'params': {
-            'bb_period': 20,
-            'bb_std_dev': 2.0,
-            'min_entry_threshold': 0.70,
-            'max_entry_threshold': 0.90,
-            'quick_exit_threshold': 0.55,
-            'stop_loss_threshold': 0.06,
-            'take_profit_threshold': 0.03,
-            'monitor_interval_seconds': 60,
-        },
-        'chart_file': 'live_ultra.html',
-        'description': '动态调整，快速止盈止损'
-    },
     'mean_reversion': {
         'class': MeanReversionStrategy,
         'name': '均值回归策略',
@@ -157,9 +64,43 @@ STRATEGY_CONFIGS = {
             'rsi_overbought': 70,
             'max_history_bars': 500
         },
-        'chart_file': 'live_mean_reversion.html',
-        'description': '基于布林带和RSI的均值回归策略'
-    }
+        'description': '基于布林带和RSI的经典均值回归策略'
+    },
+    'moderate': {
+        'class': ModerateAggressiveStrategy,
+        'name': '温和进取策略',
+        'params': {
+            'bb_period': 20,
+            'bb_std_dev': 2.0,
+            'entry_threshold': 0.95,
+            'exit_threshold': 0.60,
+            'stop_loss_threshold': 0.10,
+            'monitor_interval_seconds': 60,
+        },
+        'description': '接近布林带就交易，捕捉更多机会'
+    },
+    'trend_aware': {
+        'class': TrendAwareStrategy,
+        'name': '趋势感知策略',
+        'params': {
+            'bb_period': 20,
+            'bb_std_dev': 2.0,
+            'adx_period': 14,
+            'adx_trend_threshold': 25,
+            'adx_range_threshold': 20,
+            'ema_fast_period': 12,
+            'ema_slow_period': 26,
+            'mean_reversion_entry': 0.85,
+            'mean_reversion_exit': 0.60,
+            'trend_entry_pullback': 0.50,
+            'trend_exit_profit': 0.03,
+            'stop_loss_threshold': 0.01,  # ✨ 改为 1%
+            'monitor_interval_seconds': 60,
+            'max_history_bars': 500
+        },
+        'chart_file': 'backtest_trend_aware.html',
+        'description': '接近布林带就交易，捕捉更多机会,TREND AWARE'
+    },
 }
 
 # ==========================================
@@ -168,24 +109,24 @@ STRATEGY_CONFIGS = {
 
 # 财务参数
 FINANCE_PARAMS = {
-    'INITIAL_CAPITAL': 200000.00,
+    'INITIAL_CAPITAL': 1000.0,      # 🔥 改为 1000 美元
     'COMMISSION_RATE': 0.0003,
     'SLIPPAGE_RATE': 0.0001,
-    'MIN_LOT_SIZE': 10,
-    'MAX_ALLOCATION': 0.01,
+    'MIN_LOT_SIZE': 1,              # 🔥 改为 1 股（最小交易单位）
+    'MAX_ALLOCATION': 0.95,         # 🔥 改为 95%（几乎全仓，因为资金少）
     'STAMP_DUTY_RATE': 0.001,
 }
 
 # 运行参数
-DEFAULT_INTERVAL_SECONDS = 30     # 策略运行间隔（秒）
-DEFAULT_LOOKBACK_MINUTES = 300    # 数据回溯时间（分钟）
+DEFAULT_INTERVAL_SECONDS = 30    # 策略运行间隔（秒）
+DEFAULT_LOOKBACK_MINUTES = 300    # 数据回溯时间（分钟）🔥 增加到300确保有足够数据
 DATA_TIMEFRAME = TimeFrame(5, TimeFrameUnit.Minute)  # K线周期：5分钟
 
 # 交易时间控制
 RESPECT_MARKET_HOURS = True  # 是否只在美股交易时间内运行
 MAX_RUNTIME_MINUTES = None   # 最大运行时间（分钟），None = 无限制
 
-# ✨ 强制平仓时间（默认15:55，与LiveEngine一致）
+# 强制平仓时间（默认15:55）
 FORCE_CLOSE_TIME = DEFAULT_FORCE_CLOSE_TIME
 
 # 是否在启动时从 API 同步仓位状态（仅 paper/live 模式有效）
@@ -209,16 +150,6 @@ class ChartUpdater(threading.Thread):
                  position_manager: PositionManager,
                  ticker: str,
                  update_interval: int = 30):
-        """
-        初始化图表更新器
-        
-        Args:
-            visualizer: 可视化工具
-            strategy: 策略实例
-            position_manager: 仓位管理器
-            ticker: 股票代码
-            update_interval: 更新间隔（秒）
-        """
         super().__init__()
         self.visualizer = visualizer
         self.strategy = strategy
@@ -274,32 +205,7 @@ class ChartUpdater(threading.Thread):
 
 
 # ==========================================
-# 4. 策略创建函数
-# ==========================================
-
-def create_strategy(strategy_name: str, cache: TradingCache = None):
-    """创建策略实例"""
-    if strategy_name not in STRATEGY_CONFIGS:
-        raise ValueError(f"未知策略: {strategy_name}. 可选: {list(STRATEGY_CONFIGS.keys())}")
-    
-    config = STRATEGY_CONFIGS[strategy_name]
-    strategy_class = config['class']
-    params = config['params']
-    
-    print(f"\n📊 策略: {config['name']}")
-    print(f"   描述: {config['description']}")
-    print(f"   参数:")
-    for key, value in params.items():
-        if isinstance(value, float):
-            print(f"      {key}: {value:.2f}")
-        else:
-            print(f"      {key}: {value}")
-    
-    return strategy_class(**params)
-
-
-# ==========================================
-# 5. 信号回调函数
+# 4. 信号回调函数
 # ==========================================
 
 def on_signal_received(signal_dict: dict, price: float, timestamp: datetime):
@@ -321,25 +227,19 @@ def on_signal_received(signal_dict: dict, price: float, timestamp: datetime):
         print(f"📢 [{time_str}] 交易信号: {signal} @ ${price:.2f} (置信度: {confidence}/10)")
         if '强制平仓' in reason or '收盘' in reason:
             print(f"   🔔 收盘强制平仓")
-        
-        # 这里可以添加：
-        # - 发送邮件通知
-        # - 发送 Telegram/Discord 消息
-        # - 写入数据库
-        # - 等等...
 
 
 # ==========================================
-# 6. 主函数
+# 5. 主函数
 # ==========================================
 
 def main():
     """主函数"""
-    parser = argparse.ArgumentParser(description='实盘交易运行器 - 支持多策略（改进版）')
+    parser = argparse.ArgumentParser(description='实盘交易运行器 - 带实时图表（简化版）')
     
-    parser.add_argument('--strategy', type=str, default='moderate',
+    parser.add_argument('--strategy', type=str, default='mean_reversion',
                        choices=list(STRATEGY_CONFIGS.keys()),
-                       help='选择策略 (默认: moderate)')
+                       help='选择策略 (默认: mean_reversion)')
     
     parser.add_argument('--ticker', type=str, default='TSLA',
                        help='股票代码 (默认: TSLA)')
@@ -354,9 +254,6 @@ def main():
     parser.add_argument('--no-chart', action='store_true',
                        help='禁用实时图表')
     
-    parser.add_argument('--force-close-time', type=str, default=None,
-                       help='强制平仓时间（HH:MM格式，默认15:55）')
-    
     args = parser.parse_args()
     
     # 获取配置
@@ -366,17 +263,7 @@ def main():
     INTERVAL_SECONDS = args.interval
     ENABLE_CHART = not args.no_chart
     
-    # ✨ 解析强制平仓时间
-    if args.force_close_time:
-        try:
-            hour, minute = map(int, args.force_close_time.split(':'))
-            force_close_time = dt_time(hour, minute)
-        except:
-            print(f"⚠️ 无效的时间格式: {args.force_close_time}，使用默认值 15:55")
-            force_close_time = FORCE_CLOSE_TIME
-    else:
-        force_close_time = FORCE_CLOSE_TIME
-    
+    # 文件路径
     process_id = f"{TICKER}_{SELECTED_STRATEGY}_{TRADING_MODE}"
     base_dir = Path("live_trading")
     cache_dir = base_dir / "cache"
@@ -390,7 +277,7 @@ def main():
     strategy_config = STRATEGY_CONFIGS[SELECTED_STRATEGY]
     
     print("\n" + "="*60)
-    print("🚀 实盘交易系统初始化（改进版）")
+    print("🚀 实盘交易系统初始化")
     print("="*60)
     print(f"   股票代码: {TICKER}")
     print(f"   交易模式: {TRADING_MODE.upper()}")
@@ -401,11 +288,7 @@ def main():
     if ENABLE_CHART:
         print(f"   图表文件: {chart_file}")
     print(f"   缓存文件: {cache_file}")
-    
-    # ✨ 显示收盘管理配置
-    print(f"\n⏰ 收盘管理:")
-    print(f"   强制平仓时间: {force_close_time.strftime('%H:%M')} ET")
-    print(f"   策略将在此时间自动平仓所有持仓")
+    print(f"   强制平仓时间: {FORCE_CLOSE_TIME.strftime('%H:%M')} ET")
     
     if TRADING_MODE == 'live':
         print("\n" + "⚠️"*20)
@@ -451,7 +334,12 @@ def main():
     
     # E. Strategy
     print(f"\n🧠 策略初始化...")
-    strategy = create_strategy(SELECTED_STRATEGY, cache)
+    strategy_class = strategy_config['class']
+    strategy_params = strategy_config['params']
+    strategy = strategy_class(**strategy_params)
+    
+    print(f"   策略: {strategy_config['name']}")
+    print(f"   描述: {strategy_config['description']}")
     
     # F. 初始化图表可视化
     visualizer = None
@@ -479,11 +367,10 @@ def main():
         print(f"   浏览器打开: {chart_file}")
     
     # ==========================================
-    # G. Create and Run Live Engine（改进版）
+    # G. Create and Run Live Engine
     # ==========================================
     
     try:
-        # ✨ LiveEngine现在内置强制平仓功能
         live_engine = LiveEngine(
             ticker=TICKER,
             strategy=strategy,
@@ -496,7 +383,7 @@ def main():
             respect_market_hours=RESPECT_MARKET_HOURS,
             max_runtime_minutes=MAX_RUNTIME_MINUTES,
             on_signal_callback=on_signal_received,
-            force_close_time=force_close_time  # ✨ 传入强制平仓时间
+            force_close_time=FORCE_CLOSE_TIME
         )
         
         # 运行引擎
@@ -522,9 +409,9 @@ def main():
     print(f"   迭代次数: {report.get('iterations', 0)}")
     print(f"   交易信号: {report.get('signals', 0)}")
     print(f"   执行交易: {report.get('trades_executed', 0)}")
-    print(f"   强制平仓: {'是' if report.get('force_close_executed', False) else '否'}")  # ✨ 新增
+    print(f"   强制平仓: {'是' if report.get('force_close_executed', False) else '否'}")
     print(f"   最终权益: ${report.get('final_equity', 0):,.2f}")
-    print(f"   最终持仓: {report.get('final_position', 0):.0f} 股 {'✅' if report.get('final_position', 0) == 0 else '⚠️'}")  # ✨ 新增
+    print(f"   最终持仓: {report.get('final_position', 0):.0f} 股 {'✅' if report.get('final_position', 0) == 0 else '⚠️'}")
     print("="*60)
     
     # 打印交易日志

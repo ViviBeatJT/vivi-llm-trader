@@ -76,11 +76,14 @@ class TrendAwareStrategy:
                  trend_entry_pullback: float = 0.50,  # 回调到50%开仓
                  trend_exit_profit: float = 0.03,     # 3%止盈
                  
+                 # 波动率过滤（防止布林带收窄时交易）
+                 min_bb_width_pct: float = 0.02,      # 最小布林带宽度 2%（相对价格）
+                 
                  # 信号冷却期（防止频繁切换）
                  cooldown_minutes: int = 15,          # 平仓后等待15分钟再开新仓（延长）
                  
                  # 风险管理
-                 stop_loss_threshold: float = 0.01,  # 1%止损（快速止损）
+                 stop_loss_threshold: float = 0.02,  # 2%止损（更合理的阈值）
                  monitor_interval_seconds: int = 60,
                  max_history_bars: int = 500):
         
@@ -100,6 +103,7 @@ class TrendAwareStrategy:
         self.trend_entry_pullback = trend_entry_pullback
         self.trend_exit_profit = trend_exit_profit
         
+        self.min_bb_width_pct = min_bb_width_pct
         self.cooldown_minutes = cooldown_minutes
         self.stop_loss_threshold = stop_loss_threshold
         self.monitor_interval_seconds = monitor_interval_seconds
@@ -114,7 +118,8 @@ class TrendAwareStrategy:
         print(f"   快速 EMA: {ema_fast_period} / 慢速 EMA: {ema_slow_period}")
         print(f"   震荡市策略: 均值回归（{mean_reversion_entry*100:.0f}% 开仓）")
         print(f"   趋势市策略: 趋势跟踪（{trend_entry_pullback*100:.0f}% 回调）")
-        print(f"   止损阈值: {stop_loss_threshold*100:.1f}%")
+        print(f"   止损阈值: {stop_loss_threshold*100:.1f}% (给策略更多空间)")
+        print(f"   🔒 最小BB宽度: {min_bb_width_pct*100:.1f}% (避免低波动陷阱)")
         print(f"   ⏰ 冷却期: {cooldown_minutes} 分钟（平仓后等待）")
     
     def _calculate_adx(self, df: pd.DataFrame, period: int = 14) -> pd.Series:
@@ -227,9 +232,15 @@ class TrendAwareStrategy:
                    avg_cost: float = 0.0,
                    verbose: bool = False,
                    is_market_close: bool = False,
-                   current_time_et = None) -> Tuple[Dict, pd.DataFrame]:
+                   current_time_et = None,
+                   initial_capital: float = 1000.0,  # 新增：初始资金
+                   current_equity: float = None) -> Tuple[Dict, pd.DataFrame]:  # 新增：当前权益
         """
         获取交易信号
+        
+        Args:
+            initial_capital: 初始资金（用于计算总体亏损）
+            current_equity: 当前账户权益（用于额外止损检查）
         
         Returns:
             (signal_data, updated_df)
@@ -287,7 +298,44 @@ class TrendAwareStrategy:
                 'adx': adx
             }, df
         
-        # === 止损检查（优先级最高）===
+        # === 基于总权益的止损检查（优先级最高）===
+        if current_equity is not None and initial_capital > 0 and current_position != 0:
+            total_loss_pct = (current_equity - initial_capital) / initial_capital
+            
+            if verbose:
+                print(f"   💰 账户检查: 初始=${initial_capital:.2f}, 当前=${current_equity:.2f}, 总亏损={total_loss_pct*100:.2f}%")
+            
+            # 如果总亏损超过阈值，立即平仓
+            if total_loss_pct <= -self.stop_loss_threshold:
+                if current_position > 0:
+                    signal = 'SELL'
+                    reason = f"🛑 账户止损！总亏损 {total_loss_pct*100:.2f}%（超过 {self.stop_loss_threshold*100:.1f}%）"
+                elif current_position < 0:
+                    signal = 'COVER'
+                    reason = f"🛑 账户止损！总亏损 {total_loss_pct*100:.2f}%（超过 {self.stop_loss_threshold*100:.1f}%）"
+                
+                confidence = 10
+                
+                if verbose:
+                    print(f"🛑 [账户止损] {ticker}: {reason}")
+                    print(f"   ${initial_capital:.2f} → ${current_equity:.2f} (亏损 ${initial_capital - current_equity:.2f})")
+                
+                # 记录止损平仓时间
+                current_time = df.index[-1] if len(df) > 0 else None
+                self._last_exit_time[ticker] = current_time
+                if verbose:
+                    print(f"   ⏰ 账户止损触发，开始 {self.cooldown_minutes} 分钟冷却期")
+                
+                return {
+                    'signal': signal,
+                    'confidence': confidence,
+                    'reason': reason,
+                    'price': price,
+                    'market_state': market_state,
+                    'adx': adx
+                }, df
+        
+        # === 基于持仓成本的止损检查 ===
         if current_position != 0 and avg_cost > 0:
             if verbose:
                 print(f"   💰 持仓检查: 持仓={current_position}, 成本=${avg_cost:.2f}, 当前=${price:.2f}")
@@ -351,6 +399,35 @@ class TrendAwareStrategy:
                         'market_state': market_state,
                         'adx': adx
                     }, df
+        
+        # === 布林带宽度检查（防止在低波动期交易）===
+        bb_width_pct = bb_range / price if price > 0 else 0
+        
+        if verbose:
+            print(f"   📏 布林带宽度: {bb_width_pct*100:.2f}% (最小要求: {self.min_bb_width_pct*100:.1f}%)")
+        
+        # 只有在准备开新仓时才检查布林带宽度
+        if current_position == 0 and bb_width_pct < self.min_bb_width_pct:
+            signal = 'HOLD'
+            confidence = 5
+            reason = f"🔒 布林带收窄 ({bb_width_pct*100:.2f}% < {self.min_bb_width_pct*100:.1f}%)，观望"
+            
+            if verbose:
+                print(f"   🔒 [低波动保护] {ticker}: {reason}")
+                print(f"      当前BB宽度: ${bb_range:.2f} ({bb_width_pct*100:.2f}%)")
+                print(f"      等待波动率恢复后再交易")
+            
+            return {
+                'signal': signal,
+                'confidence': confidence,
+                'reason': reason,
+                'price': price,
+                'bb_position': bb_position,
+                'market_state': market_state,
+                'adx': adx,
+                'ema_fast': ema_fast,
+                'ema_slow': ema_slow
+            }, df
         
         # === 根据市场状态选择策略 ===
         
