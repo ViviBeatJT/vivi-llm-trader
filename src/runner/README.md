@@ -1,9 +1,23 @@
+source llm-trade/bin/activate
+
+
 目前用的比较好的runner:
 backtest_with_chart_multi_strategy
+
+python -m src.runner.backtest_with_chart_multi_strategy --strategy moderate --ticker TSLA --date 2025-11-05
 
 
 python -m src.runner.live_runner_with_chart_multi_strategy --strategy moderate --ticker TSLA --mode paper
 
+
+
+# 1-year backtest with moderate strategy
+python -m src.runner.bulk_backtest_runner \
+    --ticker TSLA \
+    --start 2025-11-01 \
+    --end 2025-12-01 \
+    --strategies moderate \
+    --trading-days-only
 
 
 # 🚀 多进程交易系统使用指南
