@@ -1,7 +1,13 @@
-# src/runner/live_runner.py
+# src/runner/live_runner_with_chart_multi_strategy.py
 
 """
-实盘交易运行器 - 支持多策略和实时图表
+实盘交易运行器 - 支持多策略和实时图表（改进版）
+
+✨ 改进点：
+1. 15:55后自动强制平仓（在LiveEngine中实现）
+2. 16:00市场收盘后停止运行
+3. 最终持仓安全检查
+4. 简化代码，逻辑更清晰
 
 支持策略：
 1. conservative - 原始保守策略
@@ -20,9 +26,10 @@
 - 实时图表更新
 - 支持模拟盘/实盘/本地模拟
 - 自动刷新图表
+- ✨ 自动收盘平仓保护
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timezone, time as dt_time
 import os
 from dotenv import load_dotenv
 import argparse
@@ -37,6 +44,9 @@ from src.manager.position_manager import PositionManager
 from src.data_fetcher.alpaca_data_fetcher import AlpacaDataFetcher
 from src.engine.live_engine import LiveEngine
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
+
+# ✨ Time utilities
+from src.utils.market_time_utils import DEFAULT_FORCE_CLOSE_TIME, format_time_et
 
 # --- Simple Chart Visualizer ---
 from src.visualization.simple_chart_visualizer import SimpleChartVisualizer
@@ -85,7 +95,7 @@ STRATEGY_CONFIGS = {
             'stop_loss_threshold': 0.10,
             'monitor_interval_seconds': 60,
         },
-        'chart_file': 'live_moderate' +  '.html' ,
+        'chart_file': 'live_moderate.html',
         'description': '接近布林带就交易，捕捉更多机会（推荐）'
     },
     'moderate_dynamic': {
@@ -162,7 +172,7 @@ FINANCE_PARAMS = {
     'COMMISSION_RATE': 0.0003,
     'SLIPPAGE_RATE': 0.0001,
     'MIN_LOT_SIZE': 10,
-    'MAX_ALLOCATION': 0.01,  # 💰 提高到95%，最大化资金利用率
+    'MAX_ALLOCATION': 0.01,
     'STAMP_DUTY_RATE': 0.001,
 }
 
@@ -174,6 +184,9 @@ DATA_TIMEFRAME = TimeFrame(5, TimeFrameUnit.Minute)  # K线周期：5分钟
 # 交易时间控制
 RESPECT_MARKET_HOURS = True  # 是否只在美股交易时间内运行
 MAX_RUNTIME_MINUTES = None   # 最大运行时间（分钟），None = 无限制
+
+# ✨ 强制平仓时间（默认15:55，与LiveEngine一致）
+FORCE_CLOSE_TIME = DEFAULT_FORCE_CLOSE_TIME
 
 # 是否在启动时从 API 同步仓位状态（仅 paper/live 模式有效）
 SYNC_POSITION_ON_START = True
@@ -213,7 +226,7 @@ class ChartUpdater(threading.Thread):
         self.ticker = ticker
         self.update_interval = update_interval
         self._running = True
-        self.daemon = True  # 设置为守护线程
+        self.daemon = True
     
     def run(self):
         """运行图表更新循环"""
@@ -300,10 +313,14 @@ def on_signal_received(signal_dict: dict, price: float, timestamp: datetime):
     """
     signal = signal_dict.get('signal', 'UNKNOWN')
     confidence = signal_dict.get('confidence_score', 0)
+    reason = signal_dict.get('reason', '')
     
     # 只对交易信号发送通知
     if signal in ['BUY', 'SELL', 'SHORT', 'COVER']:
-        print(f"📢 交易信号: {signal} @ ${price:.2f} (置信度: {confidence}/10)")
+        time_str = format_time_et(timestamp)
+        print(f"📢 [{time_str}] 交易信号: {signal} @ ${price:.2f} (置信度: {confidence}/10)")
+        if '强制平仓' in reason or '收盘' in reason:
+            print(f"   🔔 收盘强制平仓")
         
         # 这里可以添加：
         # - 发送邮件通知
@@ -318,7 +335,7 @@ def on_signal_received(signal_dict: dict, price: float, timestamp: datetime):
 
 def main():
     """主函数"""
-    parser = argparse.ArgumentParser(description='实盘交易运行器 - 支持多策略')
+    parser = argparse.ArgumentParser(description='实盘交易运行器 - 支持多策略（改进版）')
     
     parser.add_argument('--strategy', type=str, default='moderate',
                        choices=list(STRATEGY_CONFIGS.keys()),
@@ -337,6 +354,9 @@ def main():
     parser.add_argument('--no-chart', action='store_true',
                        help='禁用实时图表')
     
+    parser.add_argument('--force-close-time', type=str, default=None,
+                       help='强制平仓时间（HH:MM格式，默认15:55）')
+    
     args = parser.parse_args()
     
     # 获取配置
@@ -345,6 +365,17 @@ def main():
     SELECTED_STRATEGY = args.strategy
     INTERVAL_SECONDS = args.interval
     ENABLE_CHART = not args.no_chart
+    
+    # ✨ 解析强制平仓时间
+    if args.force_close_time:
+        try:
+            hour, minute = map(int, args.force_close_time.split(':'))
+            force_close_time = dt_time(hour, minute)
+        except:
+            print(f"⚠️ 无效的时间格式: {args.force_close_time}，使用默认值 15:55")
+            force_close_time = FORCE_CLOSE_TIME
+    else:
+        force_close_time = FORCE_CLOSE_TIME
     
     process_id = f"{TICKER}_{SELECTED_STRATEGY}_{TRADING_MODE}"
     base_dir = Path("live_trading")
@@ -358,9 +389,8 @@ def main():
     
     strategy_config = STRATEGY_CONFIGS[SELECTED_STRATEGY]
     
-    
     print("\n" + "="*60)
-    print("🚀 实盘交易系统初始化")
+    print("🚀 实盘交易系统初始化（改进版）")
     print("="*60)
     print(f"   股票代码: {TICKER}")
     print(f"   交易模式: {TRADING_MODE.upper()}")
@@ -371,7 +401,12 @@ def main():
     if ENABLE_CHART:
         print(f"   图表文件: {chart_file}")
     print(f"   缓存文件: {cache_file}")
-
+    
+    # ✨ 显示收盘管理配置
+    print(f"\n⏰ 收盘管理:")
+    print(f"   强制平仓时间: {force_close_time.strftime('%H:%M')} ET")
+    print(f"   策略将在此时间自动平仓所有持仓")
+    
     if TRADING_MODE == 'live':
         print("\n" + "⚠️"*20)
         print("   警告: 您正在使用实盘模式！")
@@ -383,12 +418,11 @@ def main():
             print("已取消启动。")
             return
     
-    # A. Data Fetcher（包含账户和持仓 API）
+    # A. Data Fetcher
     is_paper = TRADING_MODE in ['paper', 'simulation']
     data_fetcher = AlpacaDataFetcher(paper=is_paper) if TRADING_MODE != 'simulation' else None
     
     # B. Cache System
-    # cache_path = os.path.join('cache', f'{TICKER}_live_cache.json')
     cache = TradingCache(cache_file)
     
     # C. Executor & Position Manager
@@ -396,7 +430,6 @@ def main():
         print("🔧 执行器: 本地模拟")
         executor = SimulationExecutor(FINANCE_PARAMS)
         position_manager = PositionManager(executor, FINANCE_PARAMS)
-        # 本地模拟模式创建一个假的 data_fetcher 用于获取数据
         data_fetcher = AlpacaDataFetcher(paper=True)
     elif TRADING_MODE == 'paper':
         print("🔧 执行器: Alpaca 模拟盘 (Paper)")
@@ -409,7 +442,7 @@ def main():
     else:
         raise ValueError(f"无效的交易模式: {TRADING_MODE}")
     
-    # D. 从 API 同步仓位状态（如果启用）
+    # D. 从 API 同步仓位状态
     if SYNC_POSITION_ON_START and TRADING_MODE in ['paper', 'live']:
         print(f"\n🔄 正在从 API 同步 {TICKER} 仓位状态...")
         sync_success = position_manager.sync_from_api(TICKER)
@@ -420,7 +453,7 @@ def main():
     print(f"\n🧠 策略初始化...")
     strategy = create_strategy(SELECTED_STRATEGY, cache)
     
-    # F. 初始化图表可视化（如果启用）
+    # F. 初始化图表可视化
     visualizer = None
     chart_updater = None
     
@@ -446,10 +479,11 @@ def main():
         print(f"   浏览器打开: {chart_file}")
     
     # ==========================================
-    # G. Create and Run Live Engine
+    # G. Create and Run Live Engine（改进版）
     # ==========================================
     
     try:
+        # ✨ LiveEngine现在内置强制平仓功能
         live_engine = LiveEngine(
             ticker=TICKER,
             strategy=strategy,
@@ -461,7 +495,8 @@ def main():
             timeframe=DATA_TIMEFRAME,
             respect_market_hours=RESPECT_MARKET_HOURS,
             max_runtime_minutes=MAX_RUNTIME_MINUTES,
-            on_signal_callback=on_signal_received
+            on_signal_callback=on_signal_received,
+            force_close_time=force_close_time  # ✨ 传入强制平仓时间
         )
         
         # 运行引擎
@@ -487,7 +522,9 @@ def main():
     print(f"   迭代次数: {report.get('iterations', 0)}")
     print(f"   交易信号: {report.get('signals', 0)}")
     print(f"   执行交易: {report.get('trades_executed', 0)}")
+    print(f"   强制平仓: {'是' if report.get('force_close_executed', False) else '否'}")  # ✨ 新增
     print(f"   最终权益: ${report.get('final_equity', 0):,.2f}")
+    print(f"   最终持仓: {report.get('final_position', 0):.0f} 股 {'✅' if report.get('final_position', 0) == 0 else '⚠️'}")  # ✨ 新增
     print("="*60)
     
     # 打印交易日志

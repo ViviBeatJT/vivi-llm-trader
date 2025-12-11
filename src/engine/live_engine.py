@@ -15,11 +15,19 @@ from src.data_fetcher.alpaca_data_fetcher import AlpacaDataFetcher
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 from src.strategies.base_strategy import BaseStrategy
 
-
-# 美股交易时间 (Eastern Time)
-US_EASTERN = pytz.timezone('America/New_York')
-MARKET_OPEN_TIME = dt_time(9, 30)   # 9:30 AM ET
-MARKET_CLOSE_TIME = dt_time(16, 0)  # 4:00 PM ET
+# ✨ Import time utilities
+from src.utils.market_time_utils import (
+    US_EASTERN,
+    MARKET_OPEN_TIME,
+    MARKET_CLOSE_TIME,
+    DEFAULT_FORCE_CLOSE_TIME,
+    get_current_et_time,
+    is_market_open,
+    is_force_close_time,
+    should_force_close_position,
+    get_close_signal_for_position,
+    format_time_et
+)
 
 
 class LiveEngine:
@@ -32,6 +40,7 @@ class LiveEngine:
     3. 自动检测美股交易时间
     4. 支持优雅退出 (Ctrl+C)
     5. 可选的交易时间限制
+    6. ✨ 收盘强制平仓管理（15:55自动平仓）
     
     与 BacktestEngine 的区别：
     - BacktestEngine: 回放历史数据，快速模拟
@@ -49,7 +58,8 @@ class LiveEngine:
                  timeframe: Optional[TimeFrame] = None,
                  respect_market_hours: bool = True,
                  max_runtime_minutes: Optional[int] = None,
-                 on_signal_callback: Optional[Callable] = None):
+                 on_signal_callback: Optional[Callable] = None,
+                 force_close_time: dt_time = DEFAULT_FORCE_CLOSE_TIME):  # ✨ 新增参数
         """
         初始化实盘交易引擎。
 
@@ -65,6 +75,7 @@ class LiveEngine:
             respect_market_hours: 是否只在美股交易时间内运行
             max_runtime_minutes: 最大运行时间（分钟），None 表示无限制
             on_signal_callback: 信号回调函数，签名: (signal_dict, price, timestamp) -> None
+            force_close_time: 强制平仓时间（默认15:55），设为None禁用强制平仓
         """
         self.ticker = ticker
         self.strategy = strategy
@@ -77,32 +88,25 @@ class LiveEngine:
         self.respect_market_hours = respect_market_hours
         self.max_runtime_minutes = max_runtime_minutes
         self.on_signal_callback = on_signal_callback
+        self.force_close_time = force_close_time  # ✨ 新增
         
         # 运行状态
         self._running = False
         self._start_time: Optional[datetime] = None
         self._iteration_count = 0
         self._signal_count = 0
+        self._force_close_executed = False  # ✨ 新增：防止重复强制平仓
         
         # 用于中断 sleep 的事件
         self._stop_event = threading.Event()
     
     def _get_current_time_et(self) -> datetime:
         """获取当前 Eastern Time。"""
-        return datetime.now(US_EASTERN)
+        return get_current_et_time()
     
     def _is_market_open(self) -> bool:
         """检查当前是否在美股交易时间内。"""
-        now_et = self._get_current_time_et()
-        current_time = now_et.time()
-        weekday = now_et.weekday()
-        
-        # 周末休市
-        if weekday >= 5:
-            return False
-        
-        # 检查交易时间
-        return MARKET_OPEN_TIME <= current_time <= MARKET_CLOSE_TIME
+        return is_market_open()
     
     def _get_time_until_market_open(self) -> timedelta:
         """计算距离下次开盘的时间。"""
@@ -195,13 +199,79 @@ class LiveEngine:
         print(f"   账户权益: ${account_status['equity']:,.2f}")
         print(f"   现金: ${account_status['cash']:,.2f}")
         print(f"   持仓: {account_status['position']:.0f} 股")
-        if account_status['position'] > 0:
+        if account_status['position'] != 0:
             print(f"   持仓均价: ${account_status['avg_cost']:.2f}")
-            unrealized_pnl = (current_price - account_status['avg_cost']) * account_status['position']
+            if account_status['position'] > 0:
+                unrealized_pnl = (current_price - account_status['avg_cost']) * account_status['position']
+            else:
+                unrealized_pnl = (account_status['avg_cost'] - current_price) * abs(account_status['position'])
             print(f"   未实现盈亏: ${unrealized_pnl:,.2f}")
         print(f"   运行迭代: {self._iteration_count} 次")
         print(f"   交易信号: {self._signal_count} 次")
         print(f"{'='*60}")
+    
+    def _execute_force_close(self, current_price: float, now_et: datetime, now_utc: datetime) -> bool:
+        """
+        执行强制平仓
+        
+        Args:
+            current_price: 当前价格
+            now_et: 当前东部时间
+            now_utc: 当前UTC时间
+            
+        Returns:
+            bool: 是否成功执行强制平仓
+        """
+        account_status = self.position_manager.get_account_status(current_price)
+        current_position = account_status.get('position', 0.0)
+        
+        if current_position == 0:
+            print(f"   ✅ 当前无持仓，无需强制平仓")
+            return True
+        
+        close_signal = get_close_signal_for_position(current_position)
+        
+        print(f"\n🔔 [{format_time_et(now_et)}] 执行强制平仓！")
+        print(f"   持仓: {current_position:.0f} 股")
+        print(f"   价格: ${current_price:.2f}")
+        print(f"   信号: {close_signal}")
+        
+        try:
+            # 构造强制平仓信号
+            force_close_signal = {
+                'signal': close_signal,
+                'confidence_score': 10,
+                'reason': f'收盘强制平仓 ({format_time_et(now_et)})'
+            }
+            
+            # 调用回调
+            if self.on_signal_callback:
+                try:
+                    self.on_signal_callback(force_close_signal, current_price, now_utc)
+                except Exception as e:
+                    print(f"⚠️ 信号回调错误: {e}")
+            
+            # 执行交易
+            trade_result = self.position_manager.execute_and_update(
+                timestamp=now_utc,
+                signal=close_signal,
+                current_price=current_price,
+                ticker=self.ticker
+            )
+            
+            if trade_result:
+                print(f"   ✅ 强制平仓成功")
+                self._signal_count += 1
+                return True
+            else:
+                print(f"   ❌ 强制平仓失败")
+                return False
+                
+        except Exception as e:
+            print(f"   ❌ 强制平仓错误: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
     
     def _run_single_iteration(self) -> bool:
         """
@@ -215,12 +285,35 @@ class LiveEngine:
         
         self._iteration_count += 1
         
+        # ✨ 优先检查：是否需要强制平仓
+        if (self.force_close_time is not None and 
+            not self._force_close_executed and
+            is_force_close_time(now_et, self.force_close_time)):
+            
+            # 获取当前价格
+            try:
+                _, current_price = self._fetch_data()
+            except Exception as e:
+                print(f"⚠️ 获取价格失败: {e}")
+                current_price = 0.0
+            
+            if current_price > 0:
+                self._execute_force_close(current_price, now_et, now_utc)
+                self._force_close_executed = True
+                
+                # 强制平仓后继续正常流程，但策略应该不会再产生新交易信号
+        
+        # ✨ 检查是否到达市场收盘时间
+        if now_et.time() >= MARKET_CLOSE_TIME:
+            print(f"\n🔴 [{format_time_et(now_et)}] 市场已收盘，停止运行")
+            return False
+        
         # 1. 获取数据
         market_data, current_price = self._fetch_data()
         
         if market_data.empty or current_price <= 0:
-            print(f"⚠️ [{now_et.strftime('%H:%M:%S')}] 无市场数据，跳过本次迭代")
-            return False
+            print(f"⚠️ [{format_time_et(now_et)}] 无市场数据，跳过本次迭代")
+            return True  # 继续运行，但跳过本次
         
         # 2. 获取当前持仓状态
         account_status = self.position_manager.get_account_status(current_price)
@@ -229,8 +322,8 @@ class LiveEngine:
         
         # 3. 调用策略
         try:
-            # 🔔 检测是否接近收盘
-            is_close_to_market_close = now_et.hour == 15 and now_et.minute >= 55
+            # ✨ 传递收盘时间信息给策略
+            is_close_to_market_close = is_force_close_time(now_et, self.force_close_time) if self.force_close_time else False
             
             signal_data, strategy_price = self.strategy.get_signal(
                 ticker=self.ticker,
@@ -238,8 +331,8 @@ class LiveEngine:
                 current_position=current_position,
                 avg_cost=avg_cost,
                 verbose=True,
-                is_market_close=is_close_to_market_close,  # 15:55后强制平仓
-                current_time_et=now_et  # 传递当前时间，用于15:50检查
+                is_market_close=is_close_to_market_close,  # ✨ 传递强制平仓标志
+                current_time_et=now_et  # ✨ 传递当前东部时间
             )
             
             signal = signal_data.get('signal', 'HOLD')
@@ -250,10 +343,10 @@ class LiveEngine:
                 current_price = strategy_price
                 
         except Exception as e:
-            print(f"❌ [{now_et.strftime('%H:%M:%S')}] 策略错误: {e}")
+            print(f"❌ [{format_time_et(now_et)}] 策略错误: {e}")
             import traceback
             traceback.print_exc()
-            return False
+            return True  # 继续运行
         
         # 4. 执行信号回调（如果有）
         if self.on_signal_callback:
@@ -266,7 +359,7 @@ class LiveEngine:
         if signal in ["BUY", "SELL", "SHORT", "COVER"]:
             self._signal_count += 1
             signal_emoji = {"BUY": "🟢", "SELL": "🔴", "SHORT": "🔻", "COVER": "🔺"}.get(signal, "⚪")
-            print(f"\n{signal_emoji} [{now_et.strftime('%H:%M:%S')}] 交易信号!")
+            print(f"\n{signal_emoji} [{format_time_et(now_et)}] 交易信号!")
             print(f"   信号: {signal} | 价格: ${current_price:.2f} | 置信度: {confidence}/10")
             print(f"   原因: {reason}")
             
@@ -274,7 +367,7 @@ class LiveEngine:
                 timestamp=now_utc,
                 signal=signal,
                 current_price=current_price,
-                ticker=self.ticker  # 🔥 修复：添加 ticker 参数
+                ticker=self.ticker
             )
             
             if trade_result:
@@ -299,6 +392,7 @@ class LiveEngine:
         self._start_time = datetime.now(timezone.utc)
         self._iteration_count = 0
         self._signal_count = 0
+        self._force_close_executed = False  # ✨ 重置强制平仓标志
         
         now_et = self._get_current_time_et()
         
@@ -306,12 +400,15 @@ class LiveEngine:
         print("🚀 实盘交易引擎启动")
         print("="*60)
         print(f"   股票代码: {self.ticker}")
-        print(f"   策略: {self.strategy}")
+        print(f"   策略: {self.strategy.__class__.__name__}")
         print(f"   运行间隔: {self.interval_seconds} 秒")
         print(f"   K线周期: {self.timeframe.amount} {self.timeframe.unit.name}")
         print(f"   遵守交易时间: {'是' if self.respect_market_hours else '否'}")
         if self.max_runtime_minutes:
             print(f"   最大运行时间: {self.max_runtime_minutes} 分钟")
+        # ✨ 显示强制平仓时间
+        if self.force_close_time:
+            print(f"   强制平仓时间: {self.force_close_time.strftime('%H:%M')} ET")
         print(f"   启动时间: {now_et.strftime('%Y-%m-%d %H:%M:%S %Z')}")
         print(f"   按 Ctrl+C 停止运行")
         print("="*60)
@@ -352,7 +449,10 @@ class LiveEngine:
                     continue
                 
                 # 运行策略迭代
-                self._run_single_iteration()
+                continue_running = self._run_single_iteration()
+                
+                if not continue_running:
+                    break  # 停止运行（例如市场收盘）
                 
                 # 等待下一次迭代
                 if self._running:
@@ -370,9 +470,48 @@ class LiveEngine:
         
         finally:
             self._running = False
+            
+            # ✨ 最终持仓检查
+            self._final_position_check()
         
         # 生成运行报告
         return self._generate_report()
+    
+    def _final_position_check(self):
+        """
+        最终持仓检查 - 确保没有遗留持仓
+        """
+        print(f"\n{'='*60}")
+        print("🔍 最终持仓检查")
+        print("="*60)
+        
+        try:
+            # 获取最终价格和持仓
+            _, current_price = self._fetch_data()
+            account_status = self.position_manager.get_account_status(current_price)
+            final_position = account_status.get('position', 0.0)
+            
+            print(f"   最终持仓: {final_position:.0f} 股")
+            
+            if final_position != 0:
+                print(f"\n⚠️  检测到未平仓位！")
+                print(f"   执行最终强制平仓...")
+                
+                now_utc = datetime.now(timezone.utc)
+                now_et = self._get_current_time_et()
+                
+                success = self._execute_force_close(current_price, now_et, now_utc)
+                
+                if success:
+                    print(f"   ✅ 最终强制平仓完成")
+                else:
+                    print(f"   ❌ 最终强制平仓失败，请手动检查持仓！")
+            else:
+                print(f"   ✅ 持仓已归零")
+                
+        except Exception as e:
+            print(f"⚠️ 最终检查失败: {e}")
+            print(f"   请手动检查持仓状态！")
     
     def _generate_report(self) -> dict:
         """生成运行报告。"""
@@ -400,6 +539,7 @@ class LiveEngine:
             'final_cash': final_status['cash'],
             'final_position': final_status['position'],
             'final_price': final_price,
+            'force_close_executed': self._force_close_executed,  # ✨ 新增
         }
         
         # 打印报告
@@ -410,10 +550,11 @@ class LiveEngine:
         print(f"   迭代次数: {self._iteration_count}")
         print(f"   交易信号: {self._signal_count}")
         print(f"   执行交易: {report['trades_executed']}")
+        print(f"   强制平仓: {'是' if self._force_close_executed else '否'}")  # ✨ 新增
         print(f"   最终价格: ${final_price:.2f}")
         print(f"   最终权益: ${final_status['equity']:,.2f}")
         print(f"   最终现金: ${final_status['cash']:,.2f}")
-        print(f"   最终持仓: {final_status['position']:.0f} 股")
+        print(f"   最终持仓: {final_status['position']:.0f} 股 {'✅' if final_status['position'] == 0 else '⚠️'}")  # ✨ 改进
         print("="*60)
         
         # 保存缓存

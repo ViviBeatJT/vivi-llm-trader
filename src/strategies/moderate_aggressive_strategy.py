@@ -1,12 +1,17 @@
-# src/strategies/moderate_aggressive_strategy.py
+# src/strategies/moderate_aggressive_strategy.py (IMPROVED VERSION)
 
 """
 温和进取策略 - Moderate Aggressive Mean Reversion
+改进版 - 强化收盘管理
 
 核心改进：
 1. 接近布林带边界就开仓（不必完全突破）
 2. 回调到 60% 位置就平仓（不必回到中线）
 3. 可调节的灵敏度参数
+4. ✨ 强化的收盘时间管理：
+   - 15:50后禁止开新仓（BUY/SHORT）
+   - 15:55后强制平仓（SELL/COVER）
+   - 多重安全检查确保不留隔夜仓
 
 适合：18:20 这种接近但未突破的情况
 """
@@ -18,13 +23,18 @@ import numpy as np
 
 class ModerateAggressiveStrategy:
     """
-    温和进取型均值回归策略
+    温和进取型均值回归策略（改进版）
     
     交易规则：
     - 价格 > 布林带宽度 85% → SHORT（例：接近上轨）
     - 空仓价格回落到 60% → COVER
     - 价格 < 布林带宽度 15% → BUY（例：接近下轨）
     - 多仓价格上涨到 40% → SELL
+    
+    收盘管理：
+    - 15:50后：禁止开新仓（BUY/SHORT），只允许平仓（SELL/COVER）
+    - 15:55后：强制平仓所有持仓
+    - 16:00前：确保持仓为0
     
     示例（以你的 18:20 数据）：
     - BB Upper: $373.38, Middle: $370.89, Lower: $368.41
@@ -40,7 +50,10 @@ class ModerateAggressiveStrategy:
                  exit_threshold: float = 0.60,     # 平仓阈值（0.60 = 回到 60%）
                  stop_loss_threshold: float = 0.10,
                  monitor_interval_seconds: int = 60,
-                 max_history_bars: int = 500):
+                 max_history_bars: int = 500,
+                 # ✨ 新增：收盘时间控制
+                 no_new_entry_time: int = 15 * 60 + 50,  # 15:50 (minutes from midnight)
+                 force_close_time: int = 15 * 60 + 55):  # 15:55 (minutes from midnight)
         """
         参数说明：
             entry_threshold: 开仓阈值（0-1）
@@ -52,6 +65,12 @@ class ModerateAggressiveStrategy:
                 - 0.60 = 价格回到 60% 位置平仓
                 - 0.50 = 回到中线平仓（保守）
                 - 0.70 = 快速平仓（激进）
+            
+            no_new_entry_time: 禁止开新仓时间（分钟，从午夜算起）
+                - 默认 950 = 15:50
+            
+            force_close_time: 强制平仓时间（分钟）
+                - 默认 955 = 15:55
         """
         self.bb_period = bb_period
         self.bb_std_dev = bb_std_dev
@@ -61,12 +80,19 @@ class ModerateAggressiveStrategy:
         self.monitor_interval_seconds = monitor_interval_seconds
         self.max_history_bars = max_history_bars
         
+        # ✨ 收盘时间控制
+        self.no_new_entry_time = no_new_entry_time
+        self.force_close_time = force_close_time
+        
         self._history_data: Dict[str, pd.DataFrame] = {}
         
-        print(f"📊 温和进取策略初始化:")
+        print(f"📊 温和进取策略初始化 (改进版):")
         print(f"   开仓阈值: {entry_threshold*100:.0f}%")
         print(f"   平仓阈值: {exit_threshold*100:.0f}%")
         print(f"   止损阈值: {stop_loss_threshold*100:.0f}%")
+        print(f"   🔔 收盘管理:")
+        print(f"      禁止新开仓: {no_new_entry_time//60:02d}:{no_new_entry_time%60:02d}")
+        print(f"      强制平仓: {force_close_time//60:02d}:{force_close_time%60:02d}")
     
     # ==================== 数据管理 ====================
     
@@ -113,6 +139,28 @@ class ModerateAggressiveStrategy:
         
         return df
     
+    # ==================== 时间检查 ====================
+    
+    def _get_time_minutes(self, time_et: pd.Timestamp) -> int:
+        """将东部时间转换为从午夜开始的分钟数"""
+        if time_et is None:
+            return 0
+        return time_et.hour * 60 + time_et.minute
+    
+    def _is_in_no_new_entry_window(self, current_time_et: pd.Timestamp) -> bool:
+        """检查是否在禁止开新仓窗口（15:50-16:00）"""
+        if current_time_et is None:
+            return False
+        time_minutes = self._get_time_minutes(current_time_et)
+        return time_minutes >= self.no_new_entry_time
+    
+    def _is_force_close_time(self, current_time_et: pd.Timestamp) -> bool:
+        """检查是否到达强制平仓时间（15:55+）"""
+        if current_time_et is None:
+            return False
+        time_minutes = self._get_time_minutes(current_time_et)
+        return time_minutes >= self.force_close_time
+    
     # ==================== 信号生成 ====================
     
     def _generate_signal(self,
@@ -122,20 +170,22 @@ class ModerateAggressiveStrategy:
                         sma: float,
                         bb_position: float,
                         current_position: float = 0.0,
-                        avg_cost: float = 0.0) -> Tuple[str, int, str]:
+                        avg_cost: float = 0.0,
+                        current_time_et: pd.Timestamp = None) -> Tuple[str, int, str]:
         """
-        根据布林带位置生成信号
+        根据布林带位置生成信号（改进版）
         
         Args:
             bb_position: 价格在布林带中的位置（0-1）
                 - 0 = 在下轨
                 - 0.5 = 在中线
                 - 1 = 在上轨
+            current_time_et: 当前东部时间
         """
         if pd.isna([price, bb_upper, bb_lower, sma, bb_position]).any():
             return "HOLD", 0, "数据不足"
         
-        # ===== 止损检查（优先级最高）=====
+        # ===== 🔴 优先级1：止损检查（最高优先级）=====
         if current_position != 0 and avg_cost > 0:
             if current_position > 0:  # 多仓
                 loss_pct = (avg_cost - price) / avg_cost
@@ -146,11 +196,23 @@ class ModerateAggressiveStrategy:
                 if loss_pct >= self.stop_loss_threshold:
                     return "COVER", 10, f"⚠️ 止损！空仓亏损 {loss_pct*100:.2f}%"
         
+        # ===== 🔴 优先级2：时间窗口检查 =====
+        in_no_entry_window = self._is_in_no_new_entry_window(current_time_et)
+        
+        # 如果在禁止开仓窗口且无持仓 → HOLD
+        if in_no_entry_window and current_position == 0:
+            time_str = f"{current_time_et.hour:02d}:{current_time_et.minute:02d}" if current_time_et else "N/A"
+            return "HOLD", 0, f"⏰ {time_str} 禁止新开仓（15:50后）"
+        
         # ===== 根据布林带位置交易 =====
         
         # 🔥 接近上轨 → 做空
         if bb_position > self.entry_threshold:
             if current_position <= 0:  # 空仓或无仓位
+                # ✨ 检查时间窗口
+                if in_no_entry_window:
+                    return "HOLD", 0, f"⏰ 15:50后禁止新开空仓"
+                
                 return "SHORT", 8, (f"价格接近上轨！位置 {bb_position*100:.1f}% "
                                    f"(${price:.2f} vs 阈值 {self.entry_threshold*100:.0f}%)")
         
@@ -163,6 +225,10 @@ class ModerateAggressiveStrategy:
         # 🔥 接近下轨 → 做多
         if bb_position < (1 - self.entry_threshold):
             if current_position >= 0:  # 多仓或无仓位
+                # ✨ 检查时间窗口
+                if in_no_entry_window:
+                    return "HOLD", 0, f"⏰ 15:50后禁止新开多仓"
+                
                 return "BUY", 8, (f"价格接近下轨！位置 {bb_position*100:.1f}% "
                                  f"(${price:.2f} vs 阈值 {(1-self.entry_threshold)*100:.0f}%)")
         
@@ -186,7 +252,7 @@ class ModerateAggressiveStrategy:
                    is_market_close: bool = False,
                    current_time_et: pd.Timestamp = None) -> Tuple[Dict, float]:
         """
-        获取交易信号
+        获取交易信号（改进版）
         
         Args:
             ticker: 股票代码
@@ -194,16 +260,19 @@ class ModerateAggressiveStrategy:
             current_position: 当前持仓
             avg_cost: 平均成本
             verbose: 是否打印详细信息
-            is_market_close: 是否是收盘时间（True=强制平仓）
-            current_time_et: 当前东部时间（用于判断是否接近收盘）
+            is_market_close: 是否是强制平仓时间（15:55+）
+            current_time_et: 当前东部时间
         
         Returns:
             (signal_dict, current_price)
         """
-        # 🔴 收盘强制平仓！
+        # ===== 🔴 最高优先级：强制平仓检查 =====
+        
+        # 检查1：is_market_close 标志（15:55+）
         if is_market_close and current_position != 0:
             close_signal = 'SELL' if current_position > 0 else 'COVER'
-            reason = f"🔔 市场收盘 - 强制平仓！持仓: {current_position:.0f} 股"
+            time_str = f"{current_time_et.hour:02d}:{current_time_et.minute:02d}" if current_time_et else "15:55"
+            reason = f"🔔 {time_str} 强制平仓！持仓: {current_position:.0f} 股"
             
             if verbose:
                 print(f"⚠️ 收盘平仓: {close_signal} | {reason}")
@@ -214,16 +283,23 @@ class ModerateAggressiveStrategy:
                 "reason": reason
             }, 0.0
         
-        # 🚫 15:50后禁止新开仓（只允许平仓）
-        if current_time_et is not None:
-            if current_time_et.hour == 15 and current_time_et.minute >= 50:
-                # 如果有持仓，允许平仓信号
-                if current_position == 0:
-                    return {
-                        "signal": "HOLD",
-                        "confidence_score": 0,
-                        "reason": "⏰ 接近收盘，禁止新开仓"
-                    }, 0.0
+        # 检查2：时间判断（15:55+），双重保险
+        if current_time_et is not None and current_position != 0:
+            if self._is_force_close_time(current_time_et):
+                close_signal = 'SELL' if current_position > 0 else 'COVER'
+                time_str = f"{current_time_et.hour:02d}:{current_time_et.minute:02d}"
+                reason = f"🔔 {time_str} 强制平仓（时间到）！持仓: {current_position:.0f} 股"
+                
+                if verbose:
+                    print(f"⚠️ 收盘平仓: {close_signal} | {reason}")
+                
+                return {
+                    "signal": close_signal,
+                    "confidence_score": 10,
+                    "reason": reason
+                }, 0.0
+        
+        # ===== 正常交易逻辑 =====
         
         # 1. 合并数据
         df = self._merge_data(ticker, new_data)
@@ -231,7 +307,8 @@ class ModerateAggressiveStrategy:
         if verbose:
             pos_str = f"多{current_position:.0f}股" if current_position > 0 else \
                      f"空{abs(current_position):.0f}股" if current_position < 0 else "无仓"
-            print(f"📊 {ticker}: {len(df)} 条K线 | {pos_str}")
+            time_str = f"{current_time_et.hour:02d}:{current_time_et.minute:02d}" if current_time_et else "N/A"
+            print(f"📊 [{time_str}] {ticker}: {len(df)} 条K线 | {pos_str}")
         
         if df.empty:
             return {"signal": "HOLD", "confidence_score": 0, "reason": "No data"}, 0.0
@@ -254,7 +331,7 @@ class ModerateAggressiveStrategy:
         latest = df_valid.iloc[-1]
         price = latest['close']
         
-        # 6. 生成信号
+        # 6. 生成信号（传入时间）
         signal, confidence, reason = self._generate_signal(
             price,
             latest['BB_UPPER'],
@@ -262,8 +339,20 @@ class ModerateAggressiveStrategy:
             latest['SMA'],
             latest['BB_POSITION'],
             current_position,
-            avg_cost
+            avg_cost,
+            current_time_et  # ✨ 传入时间
         )
+        
+        # ===== 🔴 最终过滤：15:50后禁止BUY/SHORT =====
+        if current_time_et is not None:
+            if self._is_in_no_new_entry_window(current_time_et):
+                if signal in ['BUY', 'SHORT']:
+                    time_str = f"{current_time_et.hour:02d}:{current_time_et.minute:02d}"
+                    if verbose:
+                        print(f"⚠️ [{time_str}] 过滤信号 {signal} → HOLD（15:50后禁止新开仓）")
+                    signal = "HOLD"
+                    confidence = 0
+                    reason = f"⏰ {time_str} 过滤{signal}信号（15:50后禁止新开仓）"
         
         # 7. 打印信息
         if verbose:

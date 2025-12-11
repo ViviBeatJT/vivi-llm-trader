@@ -25,7 +25,7 @@ from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 from src.executor.simulation_executor import SimulationExecutor
 
 # --- 激进策略 ---
-from src.strategies.aggresive_mean_reversion_strategy import AggressiveMeanReversionStrategy
+from src.strategies.aggressive_mean_reversion_strategy import AggressiveMeanReversionStrategy
 
 load_dotenv()
 

@@ -35,7 +35,7 @@ from src.visualization.simple_chart_visualizer import SimpleChartVisualizer
 from src.executor.simulation_executor import SimulationExecutor
 
 # --- 策略 ---
-from src.strategies.aggresive_mean_reversion_strategy import AggressiveMeanReversionStrategy
+from src.strategies.aggressive_mean_reversion_strategy import AggressiveMeanReversionStrategy
 
 load_dotenv()
 

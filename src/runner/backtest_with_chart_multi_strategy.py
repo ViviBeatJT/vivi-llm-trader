@@ -1,7 +1,13 @@
-# backtest_with_chart_multi_strategy.py
+# backtest_with_chart_multi_strategy_improved.py
 
 """
-带图表的多策略回测运行器
+带图表的多策略回测运行器（改进版）
+
+✨ 改进点：
+1. 强制收盘时间检查（15:55）
+2. 循环结束后的最终持仓验证
+3. 确保16:00前持仓归零
+4. 详细的时间窗口日志
 
 支持策略：
 1. conservative - 原始保守策略
@@ -10,16 +16,10 @@
 4. ultra - 超激进策略
 
 用法：
-    python backtest_with_chart_multi_strategy.py --strategy moderate
-    
-特点：
-- 命令行选择策略
-- 实时图表更新
-- 蜡烛图 + 布林带
-- 交易标记
+    python backtest_with_chart_multi_strategy_improved.py --strategy moderate
 """
 
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta, time as dt_time
 import os
 from dotenv import load_dotenv
 import pytz
@@ -42,7 +42,6 @@ from src.strategies.aggressive_mean_reversion_strategy import AggressiveMeanReve
 from src.strategies.moderate_aggressive_strategy import ModerateAggressiveStrategy
 from src.strategies.high_frequency_strategy import HighFrequencyStrategy
 from src.strategies.ultra_aggressive_strategy import UltraAggressiveStrategy
-from src.strategies.moderate_aggressive_dynamic_strategy import ModerateAggressiveDynamicStrategy
 
 load_dotenv()
 
@@ -77,23 +76,6 @@ STRATEGY_CONFIGS = {
         },
         'chart_file': 'backtest_moderate.html',
         'description': '接近布林带就交易，捕捉更多机会'
-    },
-    'moderate_dynamic': {
-        'class': ModerateAggressiveDynamicStrategy,
-        'name': '动态阈值温和进取策略',
-        'params': {
-            'bb_period': 20,
-            'bb_std_dev': 2.0,
-            'base_entry_threshold': 0.85,       # 正常波动阈值
-            'aggressive_entry_threshold': 0.70,  # 横盘期阈值
-            'exit_threshold': 0.60,
-            'stop_loss_threshold': 0.10,
-            'high_volatility_threshold': 0.02,   # 2% 波动
-            'low_volatility_threshold': 0.01,    # 1% 波动
-            'monitor_interval_seconds': 60,
-        },
-        'chart_file': 'backtest_moderate_dynamic.html',
-        'description': '动态调整阈值，横盘期也能交易'
     },
     'high_freq': {
         'class': HighFrequencyStrategy,
@@ -137,7 +119,12 @@ TRADING_DATE = "2025-12-05"
 
 # 回测设置
 STEP_MINUTES = 1          # 每1分钟监控一次
-LOOKBACK_MINUTES = 300    # 增加到300分钟（5小时），确保从开盘第一分钟就有数据
+LOOKBACK_MINUTES = 300    # 回看300分钟（5小时）
+
+# ✨ 关键时间点（东部时间）
+LAST_ENTRY_TIME = dt_time(15, 50)   # 最后开仓时间
+FORCE_CLOSE_TIME = dt_time(15, 55)  # 强制平仓时间
+MARKET_CLOSE_TIME = dt_time(16, 0)  # 市场收盘时间
 
 # 交易设置
 INITIAL_CAPITAL = 1000.0
@@ -170,10 +157,10 @@ def create_strategy(strategy_name: str):
 
 
 def run_backtest(strategy_name: str = 'moderate'):
-    """运行带图表的回测"""
+    """运行带图表的回测（改进版）"""
     
     print("\n" + "="*70)
-    print(f"🚀 带图表的回测 - {TICKER}")
+    print(f"🚀 带图表的回测（改进版） - {TICKER}")
     print("="*70)
     
     strategy_config = STRATEGY_CONFIGS[strategy_name]
@@ -185,6 +172,11 @@ def run_backtest(strategy_name: str = 'moderate'):
     print(f"   日期: {TRADING_DATE}")
     print(f"   步进: {STEP_MINUTES} 分钟")
     print(f"   初始资金: ${INITIAL_CAPITAL:,.0f}")
+    
+    print(f"\n⏰ 关键时间点（东部时间）:")
+    print(f"   最后开仓: {LAST_ENTRY_TIME}")
+    print(f"   强制平仓: {FORCE_CLOSE_TIME}")
+    print(f"   市场收盘: {MARKET_CLOSE_TIME}")
     
     print(f"\n📊 图表配置:")
     print(f"   文件: {chart_file}")
@@ -199,13 +191,8 @@ def run_backtest(strategy_name: str = 'moderate'):
         'COMMISSION_RATE': 0.0003,
         'SLIPPAGE_RATE': 0.0001,
         'MIN_LOT_SIZE': SHARES_PER_TRADE,
-        'MAX_ALLOCATION': 0.95,  # 💰 提高到95%，最大化资金利用率
+        'MAX_ALLOCATION': 0.95,
     }
-    
-    print(f"   初始资金: ${INITIAL_CAPITAL:,.0f}")
-    print(f"   每笔交易: {SHARES_PER_TRADE} 股")
-    print(f"   最大仓位: {FINANCE_PARAMS['MAX_ALLOCATION']*100:.0f}%")
-    print(f"   回看窗口: {LOOKBACK_MINUTES} 分钟")
     
     cache = TradingCache()
     data_fetcher = AlpacaDataFetcher()
@@ -227,11 +214,6 @@ def run_backtest(strategy_name: str = 'moderate'):
     # 4. 获取初始时间范围
     print(f"\n⏱️ 设置回测时间...")
     
-    # 解析日期并设置时间范围
-    from datetime import datetime, time as dt_time
-    import pytz
-    
-    US_EASTERN = pytz.timezone('America/New_York')
     date_parts = [int(x) for x in TRADING_DATE.split('-')]
     
     # 市场时间: 9:30 - 16:00 ET
@@ -245,18 +227,18 @@ def run_backtest(strategy_name: str = 'moderate'):
     print(f"   开始: {start_time.strftime('%Y-%m-%d %H:%M')} UTC (9:30 ET)")
     print(f"   结束: {end_time.strftime('%Y-%m-%d %H:%M')} UTC (16:00 ET)")
     print(f"   步进: {STEP_MINUTES} 分钟")
-    print(f"   回看: {LOOKBACK_MINUTES} 分钟（5分钟K线）")
     
-    # 5. 回测循环（时间驱动）
+    # 5. 回测循环
     print(f"\n🏃 开始回测...")
-    print(f"   策略: {strategy_config['name']}")
-    print(f"   每 {STEP_MINUTES} 分钟监控一次")
-    print(f"   每次获取过去 {LOOKBACK_MINUTES} 分钟的5分钟K线")
     print(f"="*70)
     
     current_time = start_time
     iteration = 0
     update_count = 0
+    
+    # ✨ 追踪关键时间点
+    last_entry_reached = False
+    force_close_reached = False
     
     try:
         while current_time <= end_time:
@@ -266,7 +248,20 @@ def run_backtest(strategy_name: str = 'moderate'):
             if current_time.tzinfo is None:
                 current_time = current_time.replace(tzinfo=timezone.utc)
             
-            # 获取截至当前时间的数据（过去120分钟的5分钟K线）
+            # 转换为东部时间
+            current_et = current_time.astimezone(US_EASTERN)
+            current_et_time = current_et.time()
+            
+            # ✨ 检测关键时间点
+            if not last_entry_reached and current_et_time >= LAST_ENTRY_TIME:
+                print(f"\n⏰ 到达最后开仓时间: {current_et.strftime('%H:%M')} ET")
+                last_entry_reached = True
+            
+            if not force_close_reached and current_et_time >= FORCE_CLOSE_TIME:
+                print(f"\n🔔 到达强制平仓时间: {current_et.strftime('%H:%M')} ET")
+                force_close_reached = True
+            
+            # 获取数据
             df = data_fetcher.get_latest_bars(
                 ticker=TICKER,
                 lookback_minutes=LOOKBACK_MINUTES,
@@ -286,21 +281,19 @@ def run_backtest(strategy_name: str = 'moderate'):
             avg_cost = account_status.get('avg_cost', 0.0)
             current_equity = account_status.get('equity', INITIAL_CAPITAL)
             
+            # ✨ 判断是否需要强制平仓
+            is_force_close = current_et_time >= FORCE_CLOSE_TIME
+            
             # 获取信号
             try:
-                # 🔔 检测是否接近收盘
-                # 转换为东部时间检查
-                current_et = current_time.astimezone(pytz.timezone('America/New_York'))
-                is_close_to_market_close = current_et.hour == 15 and current_et.minute >= 55
-                
                 signal_data, _ = strategy.get_signal(
                     ticker=TICKER,
                     new_data=df,
                     current_position=current_position,
                     avg_cost=avg_cost,
                     verbose=False,
-                    is_market_close=is_close_to_market_close,  # 15:55后强制平仓
-                    current_time_et=current_et  # 传递当前时间，用于15:50检查
+                    is_market_close=is_force_close,  # ✨ 15:55后强制平仓
+                    current_time_et=current_et       # ✨ 传入时间用于检查
                 )
                 
                 signal = signal_data['signal']
@@ -308,11 +301,11 @@ def run_backtest(strategy_name: str = 'moderate'):
                 # 执行交易
                 if signal in ['BUY', 'SELL', 'SHORT', 'COVER']:
                     emoji = {"BUY": "🟢", "SELL": "🔴", "SHORT": "🔻", "COVER": "🔺"}
-                    print(f"\n{emoji.get(signal, '⚪')} {current_time.strftime('%H:%M')} | "
+                    print(f"\n{emoji.get(signal, '⚪')} {current_et.strftime('%H:%M')} ET | "
                           f"{signal} @ ${current_price:.2f}")
                     print(f"   {signal_data.get('reason', 'N/A')}")
                     
-                    # 使用 position_manager 的方法执行交易
+                    # 执行交易
                     position_manager.execute_and_update(
                         timestamp=current_time,
                         signal=signal,
@@ -330,19 +323,6 @@ def run_backtest(strategy_name: str = 'moderate'):
             trade_log = position_manager.get_trade_log()
             
             if not strategy_df.empty:
-                # 首次更新检查数据
-                if update_count == 0:
-                    print(f"\n🔍 策略数据诊断:")
-                    print(f"   数据行数: {len(strategy_df)}")
-                    
-                    bb_cols = ['SMA', 'BB_UPPER', 'BB_LOWER']
-                    for col in bb_cols:
-                        if col in strategy_df.columns:
-                            valid_count = strategy_df[col].notna().sum()
-                            print(f"   ✅ {col}: {valid_count} 有效值")
-                        else:
-                            print(f"   ❌ {col}: 不存在！")
-                
                 visualizer.update_data(
                     market_data=strategy_df,
                     trade_log=trade_log,
@@ -355,8 +335,8 @@ def run_backtest(strategy_name: str = 'moderate'):
             # 进度显示
             if iteration % 10 == 0:
                 progress = (current_time - start_time) / (end_time - start_time) * 100
-                print(f"\n📊 进度: {progress:.1f}% | 迭代: {iteration} | 图表更新: {update_count}")
-                print(f"   权益: ${current_equity:,.0f} | 持仓: {current_position}")
+                print(f"\n📊 进度: {progress:.1f}% | 时间: {current_et.strftime('%H:%M')} ET | "
+                      f"权益: ${current_equity:,.0f} | 持仓: {current_position}")
             
             # 前进1分钟
             current_time += timedelta(minutes=STEP_MINUTES)
@@ -364,31 +344,68 @@ def run_backtest(strategy_name: str = 'moderate'):
     except KeyboardInterrupt:
         print("\n⚠️ 用户中断回测")
     
-    # 最终更新
-    print(f"\n✅ 回测循环完成！")
+    # ===== ✨ 最终持仓检查（新增）=====
     print(f"\n" + "="*70)
-    print(f"📊 回测结果 - {strategy_config['name']}")
+    print(f"🔍 最终持仓检查")
     print("="*70)
     
-    final_time = end_time
-    strategy_df = strategy.get_history_data(TICKER)
-    trade_log = position_manager.get_trade_log()
-    
-    # 获取最终价格
+    # 获取最终数据和价格
     df_final = data_fetcher.get_latest_bars(
         ticker=TICKER,
         lookback_minutes=LOOKBACK_MINUTES,
-        end_dt=final_time,
+        end_dt=end_time,
         timeframe=TimeFrame(5, TimeFrameUnit.Minute)
     )
     
     if not df_final.empty:
         final_price = df_final.iloc[-1]['close']
     else:
-        final_price = current_price
+        final_price = account_status.get('last_price', 0.0)
     
-    # 重新获取最终状态
+    # 获取最终持仓状态
     final_status = position_manager.get_account_status(final_price)
+    final_position = final_status.get('position', 0.0)
+    
+    print(f"   最终时间: {end_time.astimezone(US_EASTERN).strftime('%Y-%m-%d %H:%M')} ET")
+    print(f"   最终价格: ${final_price:.2f}")
+    print(f"   最终持仓: {final_position} 股")
+    
+    # ✨ 如果还有持仓，强制平仓！
+    if final_position != 0:
+        print(f"\n⚠️  检测到未平仓位！")
+        print(f"   持仓: {final_position} 股")
+        print(f"   执行强制平仓...")
+        
+        close_signal = 'SELL' if final_position > 0 else 'COVER'
+        
+        try:
+            position_manager.execute_and_update(
+                timestamp=end_time,
+                signal=close_signal,
+                current_price=final_price,
+                ticker=TICKER
+            )
+            
+            # 重新获取状态
+            final_status = position_manager.get_account_status(final_price)
+            final_position = final_status.get('position', 0.0)
+            
+            print(f"   ✅ 强制平仓完成")
+            print(f"   最终持仓: {final_position} 股")
+            
+            if final_position != 0:
+                print(f"   ❌ 警告：平仓后仍有持仓 {final_position} 股！")
+            
+        except Exception as e:
+            print(f"   ❌ 强制平仓失败: {e}")
+    else:
+        print(f"   ✅ 持仓已归零")
+    
+    # 最终结果
+    print(f"\n" + "="*70)
+    print(f"📊 回测结果 - {strategy_config['name']}")
+    print("="*70)
+    
     trade_log = position_manager.get_trade_log()
     
     final_equity = final_status.get('equity', INITIAL_CAPITAL)
@@ -400,14 +417,13 @@ def run_backtest(strategy_name: str = 'moderate'):
     print(f"   最终权益: ${final_equity:,.2f}")
     print(f"   盈亏: ${total_pnl:,.2f} ({total_pnl_pct:+.2f}%)")
     print(f"   现金: ${final_status.get('cash', 0):,.2f}")
-    print(f"   持仓: {final_status.get('position', 0)} 股")
+    print(f"   持仓: {final_status.get('position', 0)} 股 {'✅' if final_status.get('position', 0) == 0 else '❌'}")
     
     print(f"\n📈 交易统计:")
     
     if not trade_log.empty:
         print(f"   总交易数: {len(trade_log)}")
         
-        # 计算完成的交易（检查列名）
         if 'type' in trade_log.columns:
             completed_trades = trade_log[trade_log['type'].isin(['SELL', 'COVER'])]
             if not completed_trades.empty and 'net_pnl' in completed_trades.columns:
@@ -428,6 +444,10 @@ def run_backtest(strategy_name: str = 'moderate'):
     print(f"   文件: {chart_file}")
     print(f"   更新: {update_count} 次")
     
+    print(f"\n⏰ 时间窗口检查:")
+    print(f"   最后开仓时间触发: {'✅' if last_entry_reached else '❌'}")
+    print(f"   强制平仓时间触发: {'✅' if force_close_reached else '❌'}")
+    
     print(f"\n" + "="*70)
     print(f"✅ 回测完成！查看图表: {chart_file}")
     print("="*70 + "\n")
@@ -435,7 +455,7 @@ def run_backtest(strategy_name: str = 'moderate'):
 
 def main():
     """主函数"""
-    parser = argparse.ArgumentParser(description='带图表的多策略回测')
+    parser = argparse.ArgumentParser(description='带图表的多策略回测（改进版）')
     
     parser.add_argument('--strategy', type=str, default='moderate',
                        choices=list(STRATEGY_CONFIGS.keys()),
