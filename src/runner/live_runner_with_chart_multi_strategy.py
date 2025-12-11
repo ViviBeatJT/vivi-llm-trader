@@ -29,6 +29,7 @@ import argparse
 import time
 import threading
 import pytz
+from pathlib import Path
 
 # --- Core Modules ---
 from src.cache.trading_cache import TradingCache
@@ -345,8 +346,18 @@ def main():
     INTERVAL_SECONDS = args.interval
     ENABLE_CHART = not args.no_chart
     
+    process_id = f"{TICKER}_{SELECTED_STRATEGY}_{TRADING_MODE}"
+    base_dir = Path("live_trading")
+    cache_dir = base_dir / "cache"
+    charts_dir = base_dir / "charts"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    charts_dir.mkdir(parents=True, exist_ok=True)
+    
+    chart_file = str(charts_dir / f"{process_id}.html")
+    cache_file = str(cache_dir / f"{process_id}_cache.json")
+    
     strategy_config = STRATEGY_CONFIGS[SELECTED_STRATEGY]
-    chart_file = strategy_config['chart_file']
+    
     
     print("\n" + "="*60)
     print("🚀 实盘交易系统初始化")
@@ -359,7 +370,8 @@ def main():
     print(f"   实时图表: {'开启' if ENABLE_CHART else '关闭'}")
     if ENABLE_CHART:
         print(f"   图表文件: {chart_file}")
-    
+    print(f"   缓存文件: {cache_file}")
+
     if TRADING_MODE == 'live':
         print("\n" + "⚠️"*20)
         print("   警告: 您正在使用实盘模式！")
@@ -376,8 +388,8 @@ def main():
     data_fetcher = AlpacaDataFetcher(paper=is_paper) if TRADING_MODE != 'simulation' else None
     
     # B. Cache System
-    cache_path = os.path.join('cache', f'{TICKER}_live_cache.json')
-    cache = TradingCache(cache_path)
+    # cache_path = os.path.join('cache', f'{TICKER}_live_cache.json')
+    cache = TradingCache(cache_file)
     
     # C. Executor & Position Manager
     if TRADING_MODE == 'simulation':
