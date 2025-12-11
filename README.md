@@ -48,6 +48,8 @@ data fetcher 要能获取仓位信息。live runner 的position manager要通过
 
 4. add a list of ticker to monitor on. 
 
+5. moderate strategy looks better than trend aware strategy with MSFT. optimize the moderate strategy by : 1. add stop loss, when loss greater than 1%, sell/cover, reduce 仓位to 50%. 2. when equity loss greater than 2%,  stop a side action (e.g. buy or short).
+
 5. 长期规划：结合 LLM 深度分析 (Wall Street News)
 
 目标： 利用 Gemini 模型的搜索和总结能力，纳入基本面和市场情绪分析，实现多模态决策。
