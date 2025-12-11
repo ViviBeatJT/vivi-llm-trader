@@ -265,6 +265,7 @@ class TrendAwareStrategy:
         bb_middle = indicators['bb_middle']
         bb_lower = indicators['bb_lower']
         bb_position = indicators['bb_position']
+        bb_range = indicators['bb_range']
         adx = indicators['adx']
         ema_fast = indicators['ema_fast']
         ema_slow = indicators['ema_slow']
