@@ -61,8 +61,8 @@ class TrendAwareStrategy:
                  
                  # 趋势检测参数
                  adx_period: int = 14,           # ADX 周期
-                 adx_trend_threshold: float = 25, # ADX > 25 = 强趋势
-                 adx_range_threshold: float = 20, # ADX < 20 = 震荡
+                 adx_trend_threshold: float = 20, # ADX > 20 = 强趋势（降低阈值更敏感）
+                 adx_range_threshold: float = 15, # ADX < 15 = 震荡
                  
                  # EMA 参数（趋势方向）
                  ema_fast_period: int = 12,      # 快速 EMA
@@ -76,8 +76,11 @@ class TrendAwareStrategy:
                  trend_entry_pullback: float = 0.50,  # 回调到50%开仓
                  trend_exit_profit: float = 0.03,     # 3%止盈
                  
+                 # 信号冷却期（防止频繁切换）
+                 cooldown_minutes: int = 15,          # 平仓后等待15分钟再开新仓（延长）
+                 
                  # 风险管理
-                 stop_loss_threshold: float = 0.10,
+                 stop_loss_threshold: float = 0.01,  # 1%止损（快速止损）
                  monitor_interval_seconds: int = 60,
                  max_history_bars: int = 500):
         
@@ -97,11 +100,13 @@ class TrendAwareStrategy:
         self.trend_entry_pullback = trend_entry_pullback
         self.trend_exit_profit = trend_exit_profit
         
+        self.cooldown_minutes = cooldown_minutes
         self.stop_loss_threshold = stop_loss_threshold
         self.monitor_interval_seconds = monitor_interval_seconds
         self.max_history_bars = max_history_bars
         
         self._history_data: Dict[str, pd.DataFrame] = {}
+        self._last_exit_time: Dict[str, Optional[pd.Timestamp]] = {}  # 记录上次平仓时间
         
         print(f"📊 趋势感知策略初始化:")
         print(f"   ADX 趋势阈值: {adx_trend_threshold}（> 此值 = 趋势市）")
@@ -109,6 +114,8 @@ class TrendAwareStrategy:
         print(f"   快速 EMA: {ema_fast_period} / 慢速 EMA: {ema_slow_period}")
         print(f"   震荡市策略: 均值回归（{mean_reversion_entry*100:.0f}% 开仓）")
         print(f"   趋势市策略: 趋势跟踪（{trend_entry_pullback*100:.0f}% 回调）")
+        print(f"   止损阈值: {stop_loss_threshold*100:.1f}%")
+        print(f"   ⏰ 冷却期: {cooldown_minutes} 分钟（平仓后等待）")
     
     def _calculate_adx(self, df: pd.DataFrame, period: int = 14) -> pd.Series:
         """
@@ -280,33 +287,70 @@ class TrendAwareStrategy:
                 'adx': adx
             }, df
         
-        # === 止损检查 ===
+        # === 止损检查（优先级最高）===
         if current_position != 0 and avg_cost > 0:
+            if verbose:
+                print(f"   💰 持仓检查: 持仓={current_position}, 成本=${avg_cost:.2f}, 当前=${price:.2f}")
+            
             if current_position > 0:
+                # 多仓止损
                 pnl_pct = (price - avg_cost) / avg_cost
+                if verbose:
+                    print(f"   📊 多仓盈亏: {pnl_pct*100:.2f}% (阈值: {-self.stop_loss_threshold*100:.1f}%)")
+                
                 if pnl_pct <= -self.stop_loss_threshold:
                     signal = 'SELL'
                     confidence = 10
-                    reason = f"⚠️ 止损！多仓亏损 {pnl_pct*100:.2f}%"
+                    reason = f"🛑 止损！多仓亏损 {pnl_pct*100:.2f}%（超过 {self.stop_loss_threshold*100:.1f}% 阈值）"
+                    
+                    if verbose:
+                        print(f"🛑 [紧急止损] {ticker}: {reason}")
+                        print(f"   买入成本: ${avg_cost:.2f} | 当前价格: ${price:.2f} | 亏损: ${price - avg_cost:.2f}")
+                    
+                    # 记录止损平仓时间（开启冷却期）
+                    current_time = df.index[-1] if len(df) > 0 else None
+                    self._last_exit_time[ticker] = current_time
+                    if verbose:
+                        print(f"   ⏰ 止损触发，记录平仓时间，开始 {self.cooldown_minutes} 分钟冷却期")
+                    
+                    return {
+                        'signal': signal,
+                        'confidence': confidence,
+                        'reason': reason,
+                        'price': price,
+                        'market_state': market_state,
+                        'adx': adx
+                    }, df
+                    
             elif current_position < 0:
+                # 空仓止损
                 pnl_pct = (avg_cost - price) / avg_cost
+                if verbose:
+                    print(f"   📊 空仓盈亏: {pnl_pct*100:.2f}% (阈值: {-self.stop_loss_threshold*100:.1f}%)")
+                
                 if pnl_pct <= -self.stop_loss_threshold:
                     signal = 'COVER'
                     confidence = 10
-                    reason = f"⚠️ 止损！空仓亏损 {pnl_pct*100:.2f}%"
-            
-            if signal != 'HOLD':
-                if verbose:
-                    print(f"🛑 [止损] {ticker}: {reason}")
-                
-                return {
-                    'signal': signal,
-                    'confidence': confidence,
-                    'reason': reason,
-                    'price': price,
-                    'market_state': market_state,
-                    'adx': adx
-                }, df
+                    reason = f"🛑 止损！空仓亏损 {pnl_pct*100:.2f}%（超过 {self.stop_loss_threshold*100:.1f}% 阈值）"
+                    
+                    if verbose:
+                        print(f"🛑 [紧急止损] {ticker}: {reason}")
+                        print(f"   做空成本: ${avg_cost:.2f} | 当前价格: ${price:.2f} | 亏损: ${avg_cost - price:.2f}")
+                    
+                    # 记录止损平仓时间（开启冷却期）
+                    current_time = df.index[-1] if len(df) > 0 else None
+                    self._last_exit_time[ticker] = current_time
+                    if verbose:
+                        print(f"   ⏰ 止损触发，记录平仓时间，开始 {self.cooldown_minutes} 分钟冷却期")
+                    
+                    return {
+                        'signal': signal,
+                        'confidence': confidence,
+                        'reason': reason,
+                        'price': price,
+                        'market_state': market_state,
+                        'adx': adx
+                    }, df
         
         # === 根据市场状态选择策略 ===
         
@@ -363,6 +407,39 @@ class TrendAwareStrategy:
             }
             print(f"   {signal_emoji.get(signal, '⚪')} {signal} ({confidence}/10) - {reason}")
         
+        # === 冷却期检查（在返回信号前）===
+        current_time = df.index[-1] if len(df) > 0 else None
+        
+        # 情况1: 如果当前要开新仓（BUY或SHORT），检查是否在冷却期
+        if signal in ['BUY', 'SHORT'] and current_position == 0:
+            if ticker in self._last_exit_time and self._last_exit_time[ticker] is not None:
+                time_since_exit = (current_time - self._last_exit_time[ticker]).total_seconds() / 60
+                
+                if time_since_exit < self.cooldown_minutes:
+                    # 还在冷却期内，拒绝开新仓
+                    if verbose:
+                        print(f"   ⏰ [冷却期阻止] 距离上次平仓仅 {time_since_exit:.1f} 分钟")
+                        print(f"      需要等待 {self.cooldown_minutes - time_since_exit:.1f} 分钟")
+                    
+                    # 改为 HOLD
+                    signal = 'HOLD'
+                    confidence = 5
+                    reason = f"冷却期中（还需 {self.cooldown_minutes - time_since_exit:.1f} 分钟）"
+        
+        # 情况2: 如果是平仓信号，记录平仓时间（用于下次冷却期判断）
+        if signal in ['SELL', 'COVER'] and current_position != 0:
+            self._last_exit_time[ticker] = current_time
+            if verbose:
+                print(f"   ⏰ 记录平仓时间: {current_time}，开始 {self.cooldown_minutes} 分钟冷却期")
+        
+        # 情况3: 如果开仓成功，清除冷却时间
+        if signal in ['BUY', 'SHORT'] and current_position == 0:
+            # 只有通过冷却期检查才能走到这里
+            if ticker in self._last_exit_time:
+                self._last_exit_time[ticker] = None
+                if verbose:
+                    print(f"   ✅ 开仓成功，清除冷却期记录")
+        
         return {
             'signal': signal,
             'confidence': confidence,
@@ -389,10 +466,14 @@ class TrendAwareStrategy:
         
         if current_position == 0:
             # 无仓 - 寻找回调买入机会
-            if bb_position <= self.trend_entry_pullback:
+            # 要求：价格回调到中轨附近（40%-60%），且不能太接近下轨（避免假突破）
+            if 0.40 <= bb_position <= 0.60:
                 signal = 'BUY'
                 confidence = 8
                 reason = f"上升趋势回调买入（位置 {bb_position*100:.1f}%）"
+            elif bb_position < 0.40:
+                # 回调太深，可能趋势反转，观望
+                reason = f"回调过深，观望（位置 {bb_position*100:.1f}%）"
         
         elif current_position > 0:
             # 持多仓 - 检查止盈
@@ -419,10 +500,14 @@ class TrendAwareStrategy:
         
         if current_position == 0:
             # 无仓 - 寻找反弹做空机会
-            if bb_position >= (1 - self.trend_entry_pullback):
+            # 要求：价格反弹到中轨附近（40%-60%），且不能太接近上轨（避免假突破）
+            if 0.40 <= bb_position <= 0.60:
                 signal = 'SHORT'
                 confidence = 8
                 reason = f"下降趋势反弹做空（位置 {bb_position*100:.1f}%）"
+            elif bb_position > 0.60:
+                # 反弹太高，可能趋势反转，观望
+                reason = f"反弹过高，观望（位置 {bb_position*100:.1f}%）"
         
         elif current_position < 0:
             # 持空仓 - 检查止盈

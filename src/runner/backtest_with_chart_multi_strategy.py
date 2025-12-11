@@ -55,22 +55,22 @@ STRATEGY_CONFIGS = {
     'trend_aware': {
         'class': TrendAwareStrategy,
         'name': '趋势感知策略',
-        'params': {
-            'bb_period': 20,
-            'bb_std_dev': 2.0,
-            'adx_period': 14,
-            'adx_trend_threshold': 25,
-            'adx_range_threshold': 20,
-            'ema_fast_period': 12,
-            'ema_slow_period': 26,
-            'mean_reversion_entry': 0.85,
-            'mean_reversion_exit': 0.60,
-            'trend_entry_pullback': 0.50,
-            'trend_exit_profit': 0.03,
-            'stop_loss_threshold': 0.10,
-            'monitor_interval_seconds': 60,
-            'max_history_bars': 500
-        },
+    'params': {
+        'bb_period': 20,
+        'bb_std_dev': 2.0,
+        'adx_period': 14,
+        'adx_trend_threshold': 25,
+        'adx_range_threshold': 20,
+        'ema_fast_period': 12,
+        'ema_slow_period': 26,
+        'mean_reversion_entry': 0.85,
+        'mean_reversion_exit': 0.60,
+        'trend_entry_pullback': 0.50,
+        'trend_exit_profit': 0.03,
+        'stop_loss_threshold': 0.01,  # ✨ 改为 1%
+        'monitor_interval_seconds': 60,
+        'max_history_bars': 500
+    },
         'chart_file': 'backtest_trend_aware.html',
         'description': '接近布林带就交易，捕捉更多机会,TREND AWARE'
     },
