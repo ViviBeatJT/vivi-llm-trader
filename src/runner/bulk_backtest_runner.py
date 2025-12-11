@@ -149,6 +149,7 @@ def run_single_day_backtest(
     ticker: str,
     date_str: str,
     strategy_name: str,
+    initial_capital: float = INITIAL_CAPITAL,  # ✨ 新增参数
     verbose: bool = False,
     log_dir: str = None
 ) -> Dict:
@@ -159,6 +160,7 @@ def run_single_day_backtest(
         ticker: 股票代码
         date_str: 日期字符串 'YYYY-MM-DD'
         strategy_name: 策略名称
+        initial_capital: 初始资金（用于连续回测）
         verbose: 是否打印详细信息
         log_dir: 日志目录
         
@@ -185,7 +187,7 @@ def run_single_day_backtest(
         print(f"{'='*80}")
         print(f"股票: {ticker}")
         print(f"策略: {strategy_name} ({STRATEGY_CONFIGS[strategy_name]['name']})")
-        print(f"初始资金: ${INITIAL_CAPITAL:,.2f}")
+        print(f"初始资金: ${initial_capital:,.2f}")  # ✨ 使用传入的资金
         print(f"开始时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         print(f"{'='*80}\n")
         
@@ -198,10 +200,14 @@ def run_single_day_backtest(
         start_time = start_time.astimezone(timezone.utc)
         end_time = end_time.astimezone(timezone.utc)
         
+        # ✨ 使用传入的初始资金
+        finance_params = FINANCE_PARAMS.copy()
+        finance_params['INITIAL_CAPITAL'] = initial_capital
+        
         # 初始化组件
         data_fetcher = AlpacaDataFetcher()
-        executor = SimulationExecutor(FINANCE_PARAMS)
-        position_manager = PositionManager(executor, FINANCE_PARAMS)
+        executor = SimulationExecutor(finance_params)
+        position_manager = PositionManager(executor, finance_params)
         
         # 创建策略
         strategy_config = STRATEGY_CONFIGS[strategy_name]
@@ -295,6 +301,16 @@ def run_single_day_backtest(
         final_status = position_manager.get_account_status(final_price)
         trade_log = position_manager.get_trade_log()
         
+        # ✨ 安全获取 PnL 数据
+        total_pnl = final_status.get('total_pnl', 0.0)
+        total_pnl_pct = final_status.get('total_pnl_pct', 0.0)
+        
+        # 如果 position_manager 没有返回 total_pnl，手动计算
+        if total_pnl == 0.0 and 'equity' in final_status and 'cash' in final_status:
+            final_equity = final_status['equity']
+            total_pnl = final_equity - initial_capital
+            total_pnl_pct = (total_pnl / initial_capital * 100) if initial_capital > 0 else 0.0
+        
         # 写入最终汇总到日志
         if log_dir:
             log_file_path = Path(log_dir) / f"{date_str}_{strategy_name}.log"
@@ -305,9 +321,10 @@ def run_single_day_backtest(
                 f.write(f"结束时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
                 f.write(f"总迭代数: {iteration}\n")
                 f.write(f"最终价格: ${final_price:.2f}\n")
-                f.write(f"最终权益: ${final_status['equity']:,.2f}\n")
-                f.write(f"盈亏: ${final_status['total_pnl']:,.2f} ({final_status['total_pnl_pct']:+.2f}%)\n")
-                f.write(f"最终持仓: {final_status['position']:.0f} 股\n")
+                f.write(f"初始资金: ${initial_capital:,.2f}\n")  # ✨ 新增
+                f.write(f"最终权益: ${final_status.get('equity', 0.0):,.2f}\n")
+                f.write(f"盈亏: ${total_pnl:,.2f} ({total_pnl_pct:+.2f}%)\n")
+                f.write(f"最终持仓: {final_status.get('position', 0.0):.0f} 股\n")
                 
                 if not trade_log.empty:
                     f.write(f"\n交易记录:\n")
@@ -342,21 +359,23 @@ def run_single_day_backtest(
             'date': date_str,
             'ticker': ticker,
             'strategy': strategy_name,
-            'initial_capital': INITIAL_CAPITAL,
-            'final_equity': final_status['equity'],
-            'pnl': final_status['total_pnl'],
-            'pnl_pct': final_status['total_pnl_pct'],
+            'initial_capital': initial_capital,  # ✨ 返回实际使用的初始资金
+            'final_equity': final_status.get('equity', initial_capital),
+            'pnl': total_pnl,
+            'pnl_pct': total_pnl_pct,
             'total_trades': total_trades,
             'completed_trades': len(completed_trades),
             'winning_trades': winning_trades,
             'losing_trades': losing_trades,
             'win_rate': win_rate,
-            'final_position': final_status['position'],
+            'final_position': final_status.get('position', 0.0),
             'iterations': iteration
         }
     
     except Exception as e:
         print(f"❌ 获取最终结果失败: {e}", file=original_stdout)
+        import traceback
+        traceback.print_exc(file=original_stdout)
         return None
 
 
@@ -400,7 +419,8 @@ def run_bulk_backtest(
     end_date: str,
     strategies: List[str],
     trading_days_only: bool = True,
-    output_dir: str = 'bulk_backtest_results'
+    output_dir: str = 'bulk_backtest_results',
+    consecutive_capital: bool = True  # ✨ 新增参数
 ) -> pd.DataFrame:
     """
     批量回测
@@ -412,6 +432,7 @@ def run_bulk_backtest(
         strategies: 策略列表
         trading_days_only: 是否只包含工作日
         output_dir: 输出目录
+        consecutive_capital: 是否使用连续资金（Day2使用Day1的结束资金）
         
     Returns:
         pd.DataFrame: 所有回测结果
@@ -434,7 +455,8 @@ def run_bulk_backtest(
     print(f"   交易日数: {len(dates)}")
     print(f"   策略: {', '.join(strategies)}")
     print(f"   输出目录: {output_dir}")
-    print(f"   日志目录: {log_dir}")  # ✨ 新增
+    print(f"   日志目录: {log_dir}")
+    print(f"   连续资金: {'是' if consecutive_capital else '否'}")  # ✨ 新增
     print(f"{'='*60}\n")
     
     # 运行回测
@@ -447,35 +469,64 @@ def run_bulk_backtest(
         print(f"\n📊 策略: {STRATEGY_CONFIGS[strategy_name]['name']}")
         print(f"{'='*60}")
         
+        # ✨ 为每个策略维护独立的资金链
+        current_capital = INITIAL_CAPITAL
+        
         for date_str in dates:
             current_run += 1
             progress = current_run / total_runs * 100
             
-            print(f"[{progress:5.1f}%] {date_str} - {strategy_name}...", end=' ', flush=True)
+            print(f"[{progress:5.1f}%] {date_str} - {strategy_name} (${current_capital:,.0f})...", 
+                  end=' ', flush=True)
             
             result = run_single_day_backtest(
                 ticker=ticker,
                 date_str=date_str,
                 strategy_name=strategy_name,
+                initial_capital=current_capital,  # ✨ 传入当前资金
                 verbose=False,
-                log_dir=str(log_dir)  # ✨ 传入日志目录
+                log_dir=str(log_dir)
             )
             
             if result:
                 all_results.append(result)
                 status = "✅" if result['pnl'] >= 0 else "❌"
-                print(f"{status} PnL: ${result['pnl']:+.2f} ({result['pnl_pct']:+.2f}%) | "
-                      f"Log: logs/{date_str}_{strategy_name}.log")  # ✨ 显示日志文件
+                print(f"{status} PnL: ${result['pnl']:+.2f} ({result['pnl_pct']:+.2f}%) → ${result['final_equity']:,.0f} | "
+                      f"Log: logs/{date_str}_{strategy_name}.log")
+                
+                # ✨ 更新下一天的资金
+                if consecutive_capital:
+                    current_capital = result['final_equity']
             else:
                 print("⚠️ 跳过（无数据或错误）")
+                # 如果失败，保持当前资金不变
     
     # 转换为 DataFrame
     df = pd.DataFrame(all_results)
     
+    # ✨ 添加累计权益列
+    if consecutive_capital and not df.empty:
+        for strategy in df['strategy'].unique():
+            strategy_mask = df['strategy'] == strategy
+            df.loc[strategy_mask, 'cumulative_equity'] = df.loc[strategy_mask, 'final_equity']
+    
     # 保存原始结果
     df.to_csv(f"{output_dir}/daily_results.csv", index=False)
     print(f"\n✅ 每日结果已保存: {output_dir}/daily_results.csv")
-    print(f"✅ 每日日志已保存: {log_dir}/ (共 {len(all_results)} 个文件)")  # ✨ 新增
+    print(f"✅ 每日日志已保存: {log_dir}/ (共 {len(all_results)} 个文件)")
+    
+    # ✨ 打印最终资金汇总
+    if consecutive_capital and not df.empty:
+        print(f"\n💰 最终资金汇总:")
+        for strategy in df['strategy'].unique():
+            strategy_df = df[df['strategy'] == strategy]
+            if not strategy_df.empty:
+                initial = strategy_df.iloc[0]['initial_capital']
+                final = strategy_df.iloc[-1]['final_equity']
+                total_return = final - initial
+                total_return_pct = (total_return / initial * 100) if initial > 0 else 0
+                print(f"   {strategy:20s}: ${initial:,.2f} → ${final:,.2f} "
+                      f"(${total_return:+,.2f}, {total_return_pct:+.2f}%)")
     
     return df
 
@@ -685,6 +736,9 @@ def main():
     parser.add_argument('--output-dir', type=str, default='bulk_backtest_results',
                        help='输出目录 (默认: bulk_backtest_results)')
     
+    parser.add_argument('--no-consecutive-capital', action='store_true',
+                       help='禁用连续资金（每天都从初始资金开始）')
+    
     args = parser.parse_args()
     
     # 解析策略列表
@@ -704,7 +758,8 @@ def main():
         end_date=args.end,
         strategies=strategies,
         trading_days_only=args.trading_days_only,
-        output_dir=args.output_dir
+        output_dir=args.output_dir,
+        consecutive_capital=not args.no_consecutive_capital  # ✨ 新增
     )
     
     # 生成汇总报告

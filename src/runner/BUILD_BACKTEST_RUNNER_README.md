@@ -15,6 +15,7 @@ python bulk_backtest_runner.py \
     --end 2025-12-01 \
     --strategies moderate \
     --trading-days-only
+    (--no-consecutive-capital)
 ```
 
 ### 2. Multiple Strategies Comparison
