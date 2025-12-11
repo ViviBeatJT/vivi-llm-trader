@@ -151,7 +151,7 @@ STRATEGY_CONFIGS = {
 
 # 基本设置
 INITIAL_CAPITAL = 1000.0
-STEP_MINUTES = 1
+STEP_SECONDS = 30
 LOOKBACK_MINUTES = 300
 
 # 财务参数
@@ -260,7 +260,7 @@ def run_single_day_backtest(
             )
 
             if df.empty:
-                current_time += timedelta(minutes=STEP_MINUTES)
+                current_time += timedelta(seconds=STEP_SECONDS)
                 continue
 
             current_price = df.iloc[-1]['close']
@@ -297,7 +297,7 @@ def run_single_day_backtest(
                 )
 
             # 前进1分钟
-            current_time += timedelta(minutes=STEP_MINUTES)
+            current_time += timedelta(seconds=STEP_SECONDS)
 
     except Exception as e:
         print(f"\n{'='*80}")

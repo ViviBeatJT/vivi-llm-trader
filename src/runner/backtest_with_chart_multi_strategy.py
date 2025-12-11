@@ -141,7 +141,7 @@ TICKER = "TSLA"
 TRADING_DATE = "2025-12-05"
 
 # 回测设置
-STEP_MINUTES = 1          # 每1分钟监控一次
+STEP_SECONDS = 30          # 每1分钟监控一次
 LOOKBACK_MINUTES = 300    # 回看300分钟（5小时）
 
 # ✨ 关键时间点（东部时间）
@@ -152,7 +152,7 @@ MARKET_CLOSE_TIME = dt_time(16, 0)  # 市场收盘时间
 # 交易设置
 INITIAL_CAPITAL = 1000.0
 SHARES_PER_TRADE = 1
-COMMISSION_PER_TRADE = 1.0
+COMMISSION_PER_TRADE = 0.0
 
 # 图表设置
 AUTO_OPEN_BROWSER = True
@@ -194,7 +194,7 @@ def run_backtest(strategy_name: str = 'moderate'):
     print(f"   策略: {strategy_config['name']}")
     print(f"   股票: {TICKER}")
     print(f"   日期: {TRADING_DATE}")
-    print(f"   步进: {STEP_MINUTES} 分钟")
+    print(f"   步进: {STEP_SECONDS} 秒")
     print(f"   初始资金: ${INITIAL_CAPITAL:,.0f}")
 
     print(f"\n⏰ 关键时间点（东部时间）:")
@@ -252,7 +252,7 @@ def run_backtest(strategy_name: str = 'moderate'):
 
     print(f"   开始: {start_time.strftime('%Y-%m-%d %H:%M')} UTC (9:30 ET)")
     print(f"   结束: {end_time.strftime('%Y-%m-%d %H:%M')} UTC (16:00 ET)")
-    print(f"   步进: {STEP_MINUTES} 分钟")
+    print(f"   步进: {STEP_SECONDS} 秒")
 
     # 5. 回测循环
     print(f"\n🏃 开始回测...")
@@ -296,7 +296,7 @@ def run_backtest(strategy_name: str = 'moderate'):
             )
 
             if df.empty:
-                current_time += timedelta(minutes=STEP_MINUTES)
+                current_time += timedelta(seconds=STEP_SECONDS)
                 continue
 
             current_price = df.iloc[-1]['close']
@@ -342,7 +342,7 @@ def run_backtest(strategy_name: str = 'moderate'):
 
             except Exception as e:
                 print(f"❌ 策略错误: {e}")
-                current_time += timedelta(minutes=STEP_MINUTES)
+                current_time += timedelta(seconds=STEP_SECONDS)
                 continue
 
             # 更新图表
@@ -367,7 +367,7 @@ def run_backtest(strategy_name: str = 'moderate'):
                       f"权益: ${current_equity:,.0f} | 持仓: {current_position}")
 
             # 前进1分钟
-            current_time += timedelta(minutes=STEP_MINUTES)
+            current_time += timedelta(seconds=STEP_SECONDS)
 
     except KeyboardInterrupt:
         print("\n⚠️ 用户中断回测")
