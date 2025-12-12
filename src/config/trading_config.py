@@ -177,13 +177,13 @@ class SimpleUpTrendConfig:
     
     # ---------- 交易参数 ----------
     # 上升趋势
-    uptrend_buy_low: float = 0.40      # BB 位置下限
+    uptrend_buy_low: float = 0.30      # BB 位置下限
     uptrend_buy_high: float = 0.60     # BB 位置上限
-    uptrend_take_profit: float = 0.03  # 止盈 3%
+    uptrend_take_profit: float = 0.02  # 止盈 3%
     
     # 震荡市场
-    range_buy_threshold: float = 0.20  # BB < 20% 买入
-    range_sell_threshold: float = 0.55 # BB > 55% 卖出
+    range_buy_threshold: float = 0.15  # BB < 20% 买入
+    range_sell_threshold: float = 0.50 # BB > 55% 卖出
     
     # ---------- 止损参数 ----------
     quick_stop_loss: float = 0.0005     # 快速止损 0.05%（下降趋势）
