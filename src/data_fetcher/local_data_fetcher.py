@@ -45,7 +45,7 @@ class LocalDataFetcher(BaseDataFetcher):
     def __init__(self, 
                  data_dir: str = 'data/',
                  ticker: str = None,
-                 file_pattern: str = '{ticker}.csv',
+                 file_pattern: str = '{ticker}_5Min_1year_data.csv',
                  verbose: bool = True):
         """
         Initialize the local data fetcher and load data.

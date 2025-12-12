@@ -12,7 +12,7 @@ It handles:
 
 Usage:
     python backtest_runner.py --strategy moderate --ticker TSLA --date 2024-12-05
-    python backtest_runner.py --strategy trend_aware --ticker AAPL --date 2024-12-06 --no-chart --local-data --data-dir "/data/TSLA_5Min_1year_data.csv"
+    python backtest_runner.py --strategy trend_aware --ticker AAPL --date 2024-12-06 --no-chart  --local-data --data-dir "/Users/vivi/vivi-llm-trader/data/"
 """
 
 from datetime import datetime, timezone, timedelta
