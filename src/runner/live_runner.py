@@ -11,9 +11,10 @@ It handles:
 4. Running the engine in live mode
 
 Usage:
-    python live_runner.py --strategy moderate --ticker TSLA --mode paper
-    python live_runner.py --strategy trend_aware --ticker AAPL --mode simulation
-    python live_runner.py --strategy mean_reversion --mode live  # ⚠️ Real money!
+    python -m src.runner.live_runner --strategy trend_aware --ticker TSLA --mode paper
+    python -m src.runner.live_runner --strategy moderate --ticker TSLA --mode paper
+    python -m src.runner.live_runner --strategy trend_aware --ticker AAPL --mode simulation
+    python -m src.runner.live_runner --strategy mean_reversion --mode live  # ⚠️ Real money!
 """
 
 from datetime import datetime, timezone

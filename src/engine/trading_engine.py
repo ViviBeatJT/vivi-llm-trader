@@ -50,8 +50,8 @@ class TimeConfig:
 class FinanceConfig:
     """Financial parameters configuration."""
     initial_capital: float = 1000.0
-    commission_rate: float = 0.0003
-    slippage_rate: float = 0.0001
+    commission_rate: float = 0.0000
+    slippage_rate: float = 0.0000
     min_lot_size: int = 1
     max_allocation: float = 0.95
     stamp_duty_rate: float = 0.001

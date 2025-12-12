@@ -11,8 +11,8 @@ It handles:
 4. Running the engine
 
 Usage:
-    python backtest_runner.py --strategy moderate --ticker TSLA --date 2024-12-05
-    python backtest_runner.py --strategy trend_aware --ticker AAPL --date 2024-12-06 --no-chart  --local-data --data-dir "/Users/vivi/vivi-llm-trader/data/"
+    python -m src.runner.backtest_runner --strategy moderate --ticker SPLV --date 2025-01-01
+    python -m src.runner.backtest_runner --strategy trend_aware --ticker SPLV --date 2024-12-06 --local-data --data-dir "/Users/vivi/vivi-llm-trader/data/"
 """
 
 from datetime import datetime, timezone, timedelta
