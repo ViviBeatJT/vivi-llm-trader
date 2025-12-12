@@ -67,7 +67,7 @@ class SimpleUpTrendStrategy:
                  # 仓位调整参数
                  reduce_allocation_threshold: float = 0.001,  # 亏损 0.1% 时减仓
                  reduce_allocation_ratio: float = 0.5,       # 减到原来的 50%
-                 recovery_threshold: float = 0.001,          # 盈利 0.1% 开始恢复
+                 recovery_threshold: float = 0.005,          # 盈利 0.5% 开始恢复
                  recovery_step: float = 0.1,                 # 每次恢复 10%
                  min_allocation: float = 0.25,               # 最小仓位 25%
                  max_allocation: float = 1.0,                # 最大仓位 100%
@@ -515,7 +515,7 @@ class SimpleUpTrendStrategy:
 # ==================== 测试 ====================
 if __name__ == '__main__':
 
-    strategy = SimpleTrendStrategy(
+    strategy = SimpleUpTrendStrategy(
         quick_stop_loss=0.005,      # 0.5% 快速止损
         normal_stop_loss=0.02,      # 2% 正常止损
         reduce_allocation_threshold=0.01,  # 1% 时减仓
