@@ -15,10 +15,10 @@ Features:
 
 Usage:
     # Single strategy
-    python bulk_backtest_runner.py --strategy moderate --ticker TSLA --start 2024-12-01 --end 2024-12-31
+    python -m src.runner.bulk_backtest_runner --strategy moderate --ticker TSLA --start 2024-12-01 --end 2024-12-31 --local-data --data-dir "/Users/vivi/vivi-llm-trader/data/"
     
     # Multiple strategies
-    python bulk_backtest_runner.py --strategies moderate,trend_aware --ticker TSLA --start 2024-12-01 --end 2024-12-31
+    python rc.runner.bulk_backtest_runner --strategies moderate,trend_aware --ticker TSLA --start 2024-12-01 --end 2024-12-31 --local-data --data-dir "/Users/vivi/vivi-llm-trader/data/"
 """
 
 from datetime import datetime, timedelta
