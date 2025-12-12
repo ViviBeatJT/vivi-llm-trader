@@ -1,2 +1,0 @@
-strategy,pnl_sum,pnl_mean,pnl_std,pnl_min,pnl_max,pnl_pct_mean,pnl_pct_std,pnl_pct_min,pnl_pct_max,total_trades_sum,completed_trades_sum,winning_trades_sum,losing_trades_sum,win_rate_mean
-moderate,-7.646497986349914,-1.9116244965874785,1.8034792125042558,-4.233822060749844,0.12323406854989116,-0.19158998863149573,0.18095654347518222,-0.4248320200823435,0.012348975532246146,14,7,0,0,0.0
