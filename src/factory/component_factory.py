@@ -289,7 +289,7 @@ def register_default_strategies():
                 'adx_range_threshold': 20,
                 'ema_fast_period': 12,
                 'ema_slow_period': 26,
-                'mean_reversion_entry': 1.0,
+                'mean_reversion_entry': 0.9,
                 'mean_reversion_exit': 0.60,
                 'trend_entry_pullback': 0.50,
                 'trend_exit_profit': 0.03,
