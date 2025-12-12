@@ -12,7 +12,7 @@ It handles:
 
 Usage:
     python backtest_runner.py --strategy moderate --ticker TSLA --date 2024-12-05
-    python backtest_runner.py --strategy trend_aware --ticker AAPL --date 2024-12-06 --no-chart --api_data
+    python backtest_runner.py --strategy trend_aware --ticker AAPL --date 2024-12-06 --no-chart --local-data --data-dir "/data/TSLA_5Min_1year_data.csv"
 """
 
 from datetime import datetime, timezone, timedelta
@@ -347,7 +347,7 @@ Available Strategies:
         auto_open_browser=not args.no_browser,
         output_dir=args.output_dir,
         verbose=not args.quiet,
-        use_local_data=not args.api_data,
+        use_local_data=args.local_data,
         local_data_dir=args.data_dir
     )
 
