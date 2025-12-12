@@ -48,7 +48,7 @@ DEFAULT_STRATEGY = "moderate"
 DEFAULT_MODE = "paper"
 
 DEFAULT_INITIAL_CAPITAL = 1000.0
-DEFAULT_INTERVAL_SECONDS = 30
+DEFAULT_INTERVAL_SECONDS = 5
 DEFAULT_LOOKBACK_MINUTES = 300
 
 SYNC_POSITION_ON_START = True
@@ -208,7 +208,7 @@ def run_live(
     
     data_config = DataConfig(
         lookback_minutes=lookback_minutes,
-        timeframe=TimeFrame(5, TimeFrameUnit.Minute),
+        timeframe=TimeFrame(1, TimeFrameUnit.Minute),
         step_seconds=interval_seconds
     )
     

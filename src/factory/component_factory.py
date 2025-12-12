@@ -40,23 +40,23 @@ class StrategyConfig:
 class StrategyRegistry:
     """
     Registry for available strategies.
-    
+
     Usage:
         # Register a strategy
         StrategyRegistry.register('my_strategy', MyStrategyClass, {...})
-        
+
         # Create a strategy instance
         strategy = StrategyRegistry.create('my_strategy')
-        
+
         # Get strategy info
         info = StrategyRegistry.get_info('my_strategy')
     """
-    
+
     _strategies: Dict[str, StrategyConfig] = {}
-    
+
     @classmethod
-    def register(cls, 
-                 key: str, 
+    def register(cls,
+                 key: str,
                  strategy_class: Type,
                  name: str,
                  description: str,
@@ -70,16 +70,17 @@ class StrategyRegistry:
             default_params=default_params,
             chart_file=chart_file
         )
-    
+
     @classmethod
     def create(cls, key: str, **override_params) -> Any:
         """Create a strategy instance."""
         if key not in cls._strategies:
-            raise ValueError(f"Unknown strategy: {key}. Available: {list(cls._strategies.keys())}")
-        
+            raise ValueError(
+                f"Unknown strategy: {key}. Available: {list(cls._strategies.keys())}")
+
         config = cls._strategies[key]
         params = {**config.default_params, **override_params}
-        
+
         print(f"\n📊 Creating Strategy: {config.name}")
         print(f"   Description: {config.description}")
         print(f"   Parameters:")
@@ -88,21 +89,21 @@ class StrategyRegistry:
                 print(f"      {k}: {v:.2f}")
             else:
                 print(f"      {k}: {v}")
-        
+
         return config.strategy_class(**params)
-    
+
     @classmethod
     def get_info(cls, key: str) -> StrategyConfig:
         """Get strategy configuration info."""
         if key not in cls._strategies:
             raise ValueError(f"Unknown strategy: {key}")
         return cls._strategies[key]
-    
+
     @classmethod
     def list_strategies(cls) -> Dict[str, str]:
         """List all registered strategies."""
         return {k: v.name for k, v in cls._strategies.items()}
-    
+
     @classmethod
     def get_all_keys(cls) -> list:
         """Get all strategy keys."""
@@ -116,7 +117,7 @@ class StrategyRegistry:
 class ComponentFactory:
     """
     Factory for creating trading components.
-    
+
     Centralizes the creation of:
     - DataFetcher (Alpaca API or Local CSV)
     - Executor (Simulation or Alpaca)
@@ -124,19 +125,19 @@ class ComponentFactory:
     - Cache
     - Visualizer
     """
-    
+
     @staticmethod
-    def create_data_fetcher(mode: TradingMode, 
-                           use_local: bool = False,
-                           local_data_dir: str = 'data/'):
+    def create_data_fetcher(mode: TradingMode,
+                            use_local: bool = False,
+                            local_data_dir: str = 'data/'):
         """
         Create data fetcher based on mode and source preference.
-        
+
         Args:
             mode: Trading mode (SIMULATION, PAPER, LIVE)
             use_local: If True, use LocalDataFetcher instead of Alpaca
             local_data_dir: Directory for local CSV files
-            
+
         Returns:
             DataFetcher instance
         """
@@ -147,76 +148,77 @@ class ComponentFactory:
         else:
             from src.data_fetcher.alpaca_data_fetcher import AlpacaDataFetcher
             is_paper = mode in [TradingMode.SIMULATION, TradingMode.PAPER]
-            print(f"🔧 DataFetcher: Alpaca API ({'Paper' if is_paper else 'Live'})")
+            print(
+                f"🔧 DataFetcher: Alpaca API ({'Paper' if is_paper else 'Live'})")
             return AlpacaDataFetcher(paper=is_paper)
-    
+
     @staticmethod
     def create_local_data_fetcher(data_dir: str = 'data/',
-                                   ticker: str = None,
-                                   verbose: bool = True):
+                                  ticker: str = None,
+                                  verbose: bool = True):
         """
         Create a local data fetcher for backtesting.
-        
+
         Args:
             data_dir: Directory containing CSV files
             ticker: Ticker to load (data loaded on init)
             verbose: Whether to print status messages
-            
+
         Returns:
             LocalDataFetcher instance
         """
         from src.data_fetcher.local_data_fetcher import LocalDataFetcher
-        
+
         return LocalDataFetcher(
             data_dir=data_dir,
             ticker=ticker,
             verbose=verbose
         )
-    
+
     @staticmethod
     def create_executor(mode: TradingMode, finance_params: Dict[str, Any]):
         """Create executor based on mode."""
-        
+
         if mode == TradingMode.SIMULATION:
             from src.executor.simulation_executor import SimulationExecutor
             print("🔧 Executor: Local Simulation")
             return SimulationExecutor(finance_params)
-        
+
         elif mode == TradingMode.PAPER:
             from src.executor.alpaca_trade_executor import AlpacaExecutor
             print("🔧 Executor: Alpaca Paper Trading")
             return AlpacaExecutor(paper=True, max_allocation_rate=finance_params.get('MAX_ALLOCATION', 0.95))
-        
+
         elif mode == TradingMode.LIVE:
             from src.executor.alpaca_trade_executor import AlpacaExecutor
             print("🔧 Executor: Alpaca LIVE Trading ⚠️")
             return AlpacaExecutor(paper=False, max_allocation_rate=finance_params.get('MAX_ALLOCATION', 0.95))
-        
+
         else:
             raise ValueError(f"Unknown trading mode: {mode}")
-    
+
     @staticmethod
-    def create_position_manager(executor, 
-                                finance_params: Dict[str, Any], 
+    def create_position_manager(executor,
+                                finance_params: Dict[str, Any],
                                 data_fetcher=None):
         """Create position manager."""
         from src.manager.position_manager import PositionManager
         return PositionManager(executor, finance_params, data_fetcher=data_fetcher)
-    
+
     @staticmethod
     def create_cache(cache_file: Optional[str] = None):
         """Create trading cache."""
         from src.cache.trading_cache import TradingCache
         return TradingCache(cache_file) if cache_file else TradingCache()
-    
+
     @staticmethod
-    def create_visualizer(ticker: str, 
-                         output_file: str, 
-                         auto_open: bool = True,
-                         initial_capital: float = 1000.0):
+    def create_visualizer(ticker: str,
+                          output_file: str,
+                          auto_open: bool = True,
+                          initial_capital: float = 1000.0):
         """Create chart visualizer."""
         from src.visualization.simple_chart_visualizer import SimpleChartVisualizer
-        
+
         visualizer = SimpleChartVisualizer(
             ticker=ticker,
             output_file=output_file,
@@ -232,7 +234,7 @@ class ComponentFactory:
 
 def register_default_strategies():
     """Register all default strategies."""
-    
+
     # Import strategy classes
     try:
         from src.strategies.moderate_aggressive_strategy import ModerateAggressiveStrategy
@@ -253,7 +255,7 @@ def register_default_strategies():
         )
     except ImportError:
         pass
-    
+
     try:
         from src.strategies.churn_moderate_aggressive_strategy import ChurnModerateAggressiveStrategy
         StrategyRegistry.register(
@@ -273,7 +275,7 @@ def register_default_strategies():
         )
     except ImportError:
         pass
-    
+
     try:
         from src.strategies.trend_aware_strategy import TrendAwareStrategy
         StrategyRegistry.register(
@@ -301,7 +303,32 @@ def register_default_strategies():
         )
     except ImportError:
         pass
-    
+
+    try:
+        from src.strategies.simple_uptrend_strategy import SimpleUpTrendStrategy
+        StrategyRegistry.register(
+            'up_trend_aware',
+            SimpleUpTrendStrategy,
+            name='Simple Up Trend Aware Strategy',
+            description='ADX-based Up trend detection with adaptive behavior',
+            default_params={
+                # 止损
+                'quick_stop_loss' : 0.0005,       # 下降趋势 0.05% 止损
+                'normal_stop_loss' : 0.001,       # 正常 0.1% 止损
+
+                # 仓位调整
+                'reduce_allocation_threshold' : 0.001,  # 亏损 0.1% 触发减仓
+                'reduce_allocation_ratio' : 0.5,       # 减到 50%
+                'recovery_threshold' : 0.002,          # 盈利 0.2% 开始恢复
+                'recovery_step' : 0.1,                 # 每次恢复 10%
+                'min_allocation' : 0.25,               # 最低 25%
+                'max_allocation' : 1.0,                # 最高 100%
+            },
+            chart_file='simple_up_trend_aware.html'
+        )
+    except ImportError:
+        pass
+
     try:
         from src.strategies.mean_reversion_strategy import MeanReversionStrategy
         StrategyRegistry.register(
