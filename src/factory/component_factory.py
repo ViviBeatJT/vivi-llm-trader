@@ -118,7 +118,7 @@ class ComponentFactory:
     Factory for creating trading components.
     
     Centralizes the creation of:
-    - DataFetcher
+    - DataFetcher (Alpaca API or Local CSV)
     - Executor (Simulation or Alpaca)
     - PositionManager
     - Cache
@@ -126,12 +126,52 @@ class ComponentFactory:
     """
     
     @staticmethod
-    def create_data_fetcher(mode: TradingMode):
-        """Create data fetcher based on mode."""
-        from src.data_fetcher.alpaca_data_fetcher import AlpacaDataFetcher
+    def create_data_fetcher(mode: TradingMode, 
+                           use_local: bool = False,
+                           local_data_dir: str = 'data/'):
+        """
+        Create data fetcher based on mode and source preference.
         
-        is_paper = mode in [TradingMode.SIMULATION, TradingMode.PAPER]
-        return AlpacaDataFetcher(paper=is_paper)
+        Args:
+            mode: Trading mode (SIMULATION, PAPER, LIVE)
+            use_local: If True, use LocalDataFetcher instead of Alpaca
+            local_data_dir: Directory for local CSV files
+            
+        Returns:
+            DataFetcher instance
+        """
+        if use_local:
+            from src.data_fetcher.local_data_fetcher import LocalDataFetcher
+            print("🔧 DataFetcher: Local CSV files")
+            return LocalDataFetcher(data_dir=local_data_dir, verbose=True)
+        else:
+            from src.data_fetcher.alpaca_data_fetcher import AlpacaDataFetcher
+            is_paper = mode in [TradingMode.SIMULATION, TradingMode.PAPER]
+            print(f"🔧 DataFetcher: Alpaca API ({'Paper' if is_paper else 'Live'})")
+            return AlpacaDataFetcher(paper=is_paper)
+    
+    @staticmethod
+    def create_local_data_fetcher(data_dir: str = 'data/',
+                                   ticker: str = None,
+                                   verbose: bool = True):
+        """
+        Create a local data fetcher for backtesting.
+        
+        Args:
+            data_dir: Directory containing CSV files
+            ticker: Ticker to load (data loaded on init)
+            verbose: Whether to print status messages
+            
+        Returns:
+            LocalDataFetcher instance
+        """
+        from src.data_fetcher.local_data_fetcher import LocalDataFetcher
+        
+        return LocalDataFetcher(
+            data_dir=data_dir,
+            ticker=ticker,
+            verbose=verbose
+        )
     
     @staticmethod
     def create_executor(mode: TradingMode, finance_params: Dict[str, Any]):

@@ -63,7 +63,9 @@ def run_backtest(
     enable_chart: bool = True,
     auto_open_browser: bool = True,
     output_dir: str = "backtest_results",
-    verbose: bool = True
+    verbose: bool = True,
+    use_local_data: bool = False,
+    local_data_dir: str = "data/"
 ) -> dict:
     """
     Run a single-day backtest.
@@ -79,6 +81,8 @@ def run_backtest(
         auto_open_browser: Auto-open chart in browser
         output_dir: Output directory for results
         verbose: Print detailed output
+        use_local_data: If True, use local CSV files instead of Alpaca API
+        local_data_dir: Directory containing CSV files (when use_local_data=True)
         
     Returns:
         Backtest results dictionary
@@ -127,8 +131,15 @@ def run_backtest(
     print(f"   Date: {trading_date}")
     print(f"   Initial Capital: ${initial_capital:,.2f}")
     
-    # Data fetcher (always use Alpaca for historical data)
-    data_fetcher = ComponentFactory.create_data_fetcher(TradingMode.SIMULATION)
+    # Data fetcher (Alpaca API or local CSV)
+    if use_local_data:
+        data_fetcher = ComponentFactory.create_local_data_fetcher(
+            data_dir=local_data_dir,
+            preload=False,
+            verbose=verbose
+        )
+    else:
+        data_fetcher = ComponentFactory.create_data_fetcher(TradingMode.PAPER)
     
     # Executor (simulation for backtest)
     executor = ComponentFactory.create_executor(
@@ -300,6 +311,19 @@ Available Strategies:
         help='Reduce output verbosity'
     )
     
+    parser.add_argument(
+        '--local-data',
+        action='store_true',
+        help='Use local CSV files instead of Alpaca API'
+    )
+    
+    parser.add_argument(
+        '--data-dir',
+        type=str,
+        default='data/',
+        help='Directory containing CSV files (when using --local-data)'
+    )
+    
     args = parser.parse_args()
     
     # Default date to yesterday if not specified
@@ -322,7 +346,9 @@ Available Strategies:
         enable_chart=not args.no_chart,
         auto_open_browser=not args.no_browser,
         output_dir=args.output_dir,
-        verbose=not args.quiet
+        verbose=not args.quiet,
+        use_local_data=args.local_data,
+        local_data_dir=args.data_dir
     )
 
 

@@ -95,7 +95,9 @@ def run_single_day_with_logging(
     strategy_name: str,
     initial_capital: float,
     log_dir: Optional[str] = None,
-    verbose: bool = False
+    verbose: bool = False,
+    use_local_data: bool = False,
+    local_data_dir: str = "data/"
 ) -> Optional[Dict]:
     """
     Run backtest for a single day with optional log file output.
@@ -111,6 +113,8 @@ def run_single_day_with_logging(
         initial_capital: Starting capital
         log_dir: Directory for log files (None = no logging)
         verbose: Print detailed output
+        use_local_data: If True, use local CSV files instead of Alpaca API
+        local_data_dir: Directory containing CSV files
         
     Returns:
         Results dictionary or None on failure
@@ -133,7 +137,9 @@ def run_single_day_with_logging(
                     enable_chart=False,  # No charts for bulk runs
                     auto_open_browser=False,
                     output_dir=log_dir,
-                    verbose=verbose
+                    verbose=verbose,
+                    use_local_data=use_local_data,
+                    local_data_dir=local_data_dir
                 )
         else:
             # Run normally
@@ -144,7 +150,9 @@ def run_single_day_with_logging(
                 initial_capital=initial_capital,
                 enable_chart=False,
                 auto_open_browser=False,
-                verbose=verbose
+                verbose=verbose,
+                use_local_data=use_local_data,
+                local_data_dir=local_data_dir
             )
         
         if result is None:
@@ -193,7 +201,9 @@ def run_bulk_backtest(
     trading_days_only: bool = True,
     consecutive_capital: bool = True,
     output_dir: str = 'bulk_backtest_results',
-    verbose: bool = False
+    verbose: bool = False,
+    use_local_data: bool = False,
+    local_data_dir: str = "data/"
 ) -> pd.DataFrame:
     """
     Run bulk backtest across multiple dates and strategies.
@@ -210,6 +220,8 @@ def run_bulk_backtest(
         consecutive_capital: Use previous day's ending equity as next day's starting capital
         output_dir: Output directory
         verbose: Print detailed output per day
+        use_local_data: If True, use local CSV files instead of Alpaca API
+        local_data_dir: Directory containing CSV files
         
     Returns:
         DataFrame with all results
@@ -260,7 +272,9 @@ def run_bulk_backtest(
                 strategy_name=strategy_name,
                 initial_capital=current_capital,
                 log_dir=str(log_dir),
-                verbose=verbose
+                verbose=verbose,
+                use_local_data=use_local_data,
+                local_data_dir=local_data_dir
             )
             
             if result:
@@ -437,6 +451,19 @@ Available Strategies:
         help='Verbose output for each day'
     )
     
+    parser.add_argument(
+        '--local-data',
+        action='store_true',
+        help='Use local CSV files instead of Alpaca API'
+    )
+    
+    parser.add_argument(
+        '--data-dir',
+        type=str,
+        default='data/',
+        help='Directory containing CSV files (when using --local-data)'
+    )
+    
     args = parser.parse_args()
     
     # Determine strategies
@@ -464,7 +491,9 @@ Available Strategies:
         trading_days_only=args.trading_days_only,
         consecutive_capital=not args.no_consecutive_capital,
         output_dir=args.output_dir,
-        verbose=args.verbose
+        verbose=args.verbose,
+        use_local_data=args.local_data,
+        local_data_dir=args.data_dir
     )
     
     # Generate summaries
