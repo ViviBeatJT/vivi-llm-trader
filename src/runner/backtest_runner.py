@@ -135,7 +135,7 @@ def run_backtest(
     if use_local_data:
         data_fetcher = ComponentFactory.create_local_data_fetcher(
             data_dir=local_data_dir,
-            preload=False,
+            ticker=ticker,
             verbose=verbose
         )
     else:

@@ -286,9 +286,7 @@ class TradingEngine:
                 avg_cost=avg_cost,
                 verbose=self.config.verbose,
                 is_market_close=is_force_close,
-                current_time_et=current_et,
-                initial_capital=self.finance_config.initial_capital,
-                current_equity=current_equity
+                current_time_et=current_et
             )
             
             signal = signal_data.get('signal', 'HOLD')

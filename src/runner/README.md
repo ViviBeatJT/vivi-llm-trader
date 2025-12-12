@@ -2,9 +2,8 @@ source llm-trade/bin/activate
 
 
 目前用的比较好的runner:
-backtest_with_chart_multi_strategy
 
-python -m src.runner.backtest_with_chart_multi_strategy --strategy moderate --ticker TSLA --date 2025-11-05
+python -m src.runner.backtest_runner --strategy moderate --ticker TSLA --date 2025-11-05
 
 
 
@@ -26,7 +25,7 @@ python -m src.runner.bulk_backtest_runner \
 ### 3. Generate Visualizations
 ```bash
 # After running backtest
-python -m src.runner.bulk_backtest_visualizer --results-dir bulk_backtest_results
+python -m src.visualization.bulk_backtest_visualizer --results-dir bulk_backtest_results
 ```
 
 # 🚀 多进程交易系统使用指南
