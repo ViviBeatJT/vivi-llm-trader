@@ -3,6 +3,7 @@ __pycache__/
 *.py[cod]
 llm-trade/
 bulk_backtest_results/
+backtest_results/
 .env
 
 # MacOS ignores
