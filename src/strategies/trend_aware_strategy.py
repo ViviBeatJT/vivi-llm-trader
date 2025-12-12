@@ -61,8 +61,8 @@ class TrendAwareStrategy:
                  
                  # 趋势检测参数
                  adx_period: int = 14,           # ADX 周期
-                 adx_trend_threshold: float = 20, # ADX > 20 = 强趋势（降低阈值更敏感）
-                 adx_range_threshold: float = 15, # ADX < 15 = 震荡
+                 adx_trend_threshold: float = 25, # ADX > 25 = 强趋势（降低阈值更敏感）
+                 adx_range_threshold: float = 20, # ADX < 20 = 震荡
                  
                  # EMA 参数（趋势方向）
                  ema_fast_period: int = 12,      # 快速 EMA
@@ -131,35 +131,50 @@ class TrendAwareStrategy:
         - ADX 20-25: 趋势形成中
         - ADX < 20: 弱趋势/震荡
         """
-        high = df['high']
-        low = df['low']
-        close = df['close']
+        high = df['high'].values
+        low = df['low'].values
+        close = df['close'].values
+        
+        n = len(df)
         
         # 计算 +DM 和 -DM
-        up_move = high.diff()
-        down_move = -low.diff()
+        up_move = np.zeros(n)
+        down_move = np.zeros(n)
+        up_move[1:] = high[1:] - high[:-1]
+        down_move[1:] = low[:-1] - low[1:]
         
         plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0)
         minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0)
         
         # 计算 ATR (Average True Range)
         tr1 = high - low
-        tr2 = abs(high - close.shift(1))
-        tr3 = abs(low - close.shift(1))
-        tr = pd.DataFrame({'tr1': tr1, 'tr2': tr2, 'tr3': tr3}).max(axis=1)
-        atr = tr.rolling(window=period).mean()
+        tr2 = np.zeros(n)
+        tr3 = np.zeros(n)
+        tr2[1:] = np.abs(high[1:] - close[:-1])
+        tr3[1:] = np.abs(low[1:] - close[:-1])
+        tr = np.maximum(np.maximum(tr1, tr2), tr3)
+        
+        # 使用简单移动平均计算
+        atr = pd.Series(tr).rolling(window=period, min_periods=1).mean().values
         
         # 计算 +DI 和 -DI
-        plus_di = 100 * pd.Series(plus_dm).rolling(window=period).mean() / atr
-        minus_di = 100 * pd.Series(minus_dm).rolling(window=period).mean() / atr
+        plus_dm_smooth = pd.Series(plus_dm).rolling(window=period, min_periods=1).mean().values
+        minus_dm_smooth = pd.Series(minus_dm).rolling(window=period, min_periods=1).mean().values
+        
+        # 避免除零
+        atr_safe = np.where(atr == 0, 1, atr)
+        plus_di = 100 * plus_dm_smooth / atr_safe
+        minus_di = 100 * minus_dm_smooth / atr_safe
         
         # 计算 DX
-        dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di)
+        di_sum = plus_di + minus_di
+        di_sum_safe = np.where(di_sum == 0, 1, di_sum)
+        dx = 100 * np.abs(plus_di - minus_di) / di_sum_safe
         
         # 计算 ADX (DX 的移动平均)
-        adx = dx.rolling(window=period).mean()
+        adx = pd.Series(dx).rolling(window=period, min_periods=1).mean().values
         
-        return adx
+        return pd.Series(adx, index=df.index)
     
     def _calculate_ema(self, series: pd.Series, period: int) -> pd.Series:
         """计算指数移动平均"""
@@ -246,14 +261,14 @@ class TrendAwareStrategy:
             (signal_data, updated_df)
         """
         
-        # 更新历史数据
+        # 更新历史数据 - 确保去除重复索引
         if ticker not in self._history_data or self._history_data[ticker].empty:
             self._history_data[ticker] = new_data.copy()
         else:
-            self._history_data[ticker] = pd.concat([
-                self._history_data[ticker],
-                new_data
-            ]).drop_duplicates().tail(self.max_history_bars)
+            combined = pd.concat([self._history_data[ticker], new_data])
+            # 去除重复索引，保留最后一个
+            combined = combined[~combined.index.duplicated(keep='last')]
+            self._history_data[ticker] = combined.tail(self.max_history_bars)
         
         df = self._history_data[ticker]
         
@@ -650,29 +665,35 @@ class TrendAwareStrategy:
         if ticker not in self._history_data or self._history_data[ticker].empty:
             return pd.DataFrame()
         
+        # 创建副本并确保索引唯一
         df = self._history_data[ticker].copy()
         
+        # 去除重复索引，保留最后一个
+        if df.index.duplicated().any():
+            df = df[~df.index.duplicated(keep='last')]
+        
         # 计算所有指标（即使数据不足也要计算，只是前面会是 NaN）
-        # 1. Bollinger Bands
-        bb_middle = df['close'].rolling(window=self.bb_period, min_periods=1).mean()
-        bb_std = df['close'].rolling(window=self.bb_period, min_periods=1).std()
+        # 1. Bollinger Bands - 直接使用 .values 确保长度匹配
+        close_series = df['close']
+        bb_middle = close_series.rolling(window=self.bb_period, min_periods=1).mean()
+        bb_std = close_series.rolling(window=self.bb_period, min_periods=1).std()
         bb_upper = bb_middle + (self.bb_std_dev * bb_std)
         bb_lower = bb_middle - (self.bb_std_dev * bb_std)
         
-        # 2. ADX
+        # 2. ADX - 使用 .values 确保长度匹配
         adx = self._calculate_adx(df, self.adx_period)
         
         # 3. EMA
-        ema_fast = self._calculate_ema(df['close'], self.ema_fast_period)
-        ema_slow = self._calculate_ema(df['close'], self.ema_slow_period)
+        ema_fast = self._calculate_ema(close_series, self.ema_fast_period)
+        ema_slow = self._calculate_ema(close_series, self.ema_slow_period)
         
-        # ✨ 添加到 DataFrame - 使用标准列名（大写 + 下划线）
-        df['BB_UPPER'] = bb_upper  # 改为大写
-        df['SMA'] = bb_middle      # 改为 SMA（标准中轨名称）
-        df['BB_LOWER'] = bb_lower  # 改为大写
-        df['ADX'] = adx
-        df['EMA_FAST'] = ema_fast
-        df['EMA_SLOW'] = ema_slow
+        # ✨ 添加到 DataFrame - 使用 .values 避免索引不匹配问题
+        df['BB_UPPER'] = bb_upper.values
+        df['SMA'] = bb_middle.values
+        df['BB_LOWER'] = bb_lower.values
+        df['ADX'] = adx.values if isinstance(adx, pd.Series) else adx
+        df['EMA_FAST'] = ema_fast.values
+        df['EMA_SLOW'] = ema_slow.values
         
         # 对于早期 NaN 值，用后续有效值填充（用于图表显示）
         df['BB_UPPER'] = df['BB_UPPER'].bfill()
