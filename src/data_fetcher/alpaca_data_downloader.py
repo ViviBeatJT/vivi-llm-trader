@@ -8,7 +8,7 @@ import os
 load_dotenv()
 
 # --- Configuration ---
-TICKER = 'TSLA'
+TICKER = 'SPLV'
 INTERVAL = '5Min'
 FILENAME = f'data/{TICKER}_{INTERVAL}_1year_data.csv' # Define the desired output filename
 

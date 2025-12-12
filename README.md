@@ -52,7 +52,7 @@ data fetcher 要能获取仓位信息。live runner 的position manager要通过
 当布林带宽度很窄的时候不交易。
 
 potential stock:
-F, NVDA, TSLA, MSCI, SPLV, F, MSFT
+F, NVDA, TSLA, MSCI, SPLV, MSFT
 
 5. 长期规划：结合 LLM 深度分析 (Wall Street News)
 
