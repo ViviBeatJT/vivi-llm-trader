@@ -3,8 +3,8 @@
 """
 Bulk Backtest Runner - Multi-day, Multi-strategy Analysis
 
-This runner uses the TradingEngine for each day's backtest,
-providing consistent behavior with live trading.
+This runner reuses the single-day backtest logic from backtest_runner,
+ensuring consistent behavior across all backtests.
 
 Features:
 1. Multi-day consecutive backtesting
@@ -19,33 +19,18 @@ Usage:
     
     # Multiple strategies
     python bulk_backtest_runner.py --strategies moderate,trend_aware --ticker TSLA --start 2024-12-01 --end 2024-12-31
-    
-    # Non-consecutive capital (each day resets)
-    python bulk_backtest_runner.py --strategy moderate --no-consecutive-capital
 """
 
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta
 import argparse
 from pathlib import Path
 from typing import Dict, List, Optional
 import pandas as pd
-import pytz
 import sys
 
-from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
-
-from src.engine.trading_engine import (
-    TradingEngine, 
-    EngineConfig, 
-    TimeConfig, 
-    FinanceConfig, 
-    DataConfig
-)
-from src.factory.component_factory import (
-    ComponentFactory, 
-    StrategyRegistry, 
-    TradingMode
-)
+# Reuse the core backtest logic
+from src.runner.backtest_runner import run_backtest
+from src.factory.component_factory import StrategyRegistry
 
 
 # ==========================================
@@ -53,159 +38,10 @@ from src.factory.component_factory import (
 # ==========================================
 
 DEFAULT_INITIAL_CAPITAL = 1000.0
-DEFAULT_STEP_SECONDS = 30
-DEFAULT_LOOKBACK_MINUTES = 300
-
-US_EASTERN = pytz.timezone('America/New_York')
 
 
 # ==========================================
-# Single Day Backtest
-# ==========================================
-
-def run_single_day(
-    ticker: str,
-    date_str: str,
-    strategy_name: str,
-    initial_capital: float,
-    log_dir: Optional[str] = None,
-    verbose: bool = False
-) -> Optional[Dict]:
-    """
-    Run backtest for a single day using TradingEngine.
-    
-    Args:
-        ticker: Stock ticker
-        date_str: Date 'YYYY-MM-DD'
-        strategy_name: Strategy key
-        initial_capital: Starting capital
-        log_dir: Directory for log files
-        verbose: Print detailed output
-        
-    Returns:
-        Results dictionary or None on failure
-    """
-    # Redirect stdout to log file if specified
-    log_file = None
-    original_stdout = sys.stdout
-    
-    if log_dir:
-        log_file_path = Path(log_dir) / f"{date_str}_{strategy_name}.log"
-        log_file = open(log_file_path, 'w', encoding='utf-8')
-        sys.stdout = log_file
-    
-    try:
-        print(f"{'='*80}")
-        print(f"Single Day Backtest - {date_str}")
-        print(f"{'='*80}")
-        print(f"Ticker: {ticker}")
-        print(f"Strategy: {strategy_name}")
-        print(f"Initial Capital: ${initial_capital:,.2f}")
-        print(f"Start Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        print(f"{'='*80}\n")
-        
-        # Parse date
-        date_parts = [int(x) for x in date_str.split('-')]
-        
-        # Create configs
-        finance_config = FinanceConfig(initial_capital=initial_capital)
-        time_config = TimeConfig()
-        data_config = DataConfig(
-            lookback_minutes=DEFAULT_LOOKBACK_MINUTES,
-            step_seconds=DEFAULT_STEP_SECONDS
-        )
-        
-        # Create components
-        data_fetcher = ComponentFactory.create_data_fetcher(TradingMode.PAPER)
-        executor = ComponentFactory.create_executor(TradingMode.SIMULATION, finance_config.to_dict())
-        position_manager = ComponentFactory.create_position_manager(executor, finance_config.to_dict())
-        strategy = StrategyRegistry.create(strategy_name)
-        
-        # Create engine
-        engine_config = EngineConfig(
-            ticker=ticker,
-            strategy=strategy,
-            position_manager=position_manager,
-            data_fetcher=data_fetcher,
-            executor=executor,
-            time_config=time_config,
-            finance_config=finance_config,
-            data_config=data_config,
-            verbose=verbose
-        )
-        
-        engine = TradingEngine(engine_config, mode='backtest')
-        
-        # Time range
-        start_time = US_EASTERN.localize(
-            datetime(date_parts[0], date_parts[1], date_parts[2], 9, 30)
-        ).astimezone(timezone.utc)
-        
-        end_time = US_EASTERN.localize(
-            datetime(date_parts[0], date_parts[1], date_parts[2], 16, 0)
-        ).astimezone(timezone.utc)
-        
-        # Run
-        report = engine.run(start_time, end_time, progress_interval=50)
-        
-        # Log final results
-        print(f"\n{'='*80}")
-        print(f"Backtest Complete - Final Results")
-        print(f"{'='*80}")
-        print(f"End Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        print(f"Iterations: {report['iterations']}")
-        print(f"Final Equity: ${report['final_equity']:,.2f}")
-        print(f"PnL: ${report['pnl']:,.2f} ({report['pnl_pct']:+.2f}%)")
-        print(f"Trades: {report['trades_executed']}")
-        print(f"Final Position: {report['final_position']} shares")
-        
-        # Trade log
-        trade_log = report.get('trade_log')
-        if trade_log is not None and not trade_log.empty:
-            print(f"\nTrade Log:")
-            print("-"*80)
-            for idx, row in trade_log.iterrows():
-                print(f"{row['time'].strftime('%H:%M:%S')} | {row['type']:6s} | "
-                      f"{row['qty']:3.0f} @ ${row['price']:7.2f} | "
-                      f"PnL: ${row.get('net_pnl', 0):+7.2f}")
-        
-        print(f"{'='*80}")
-        
-        # Return results
-        return {
-            'date': date_str,
-            'ticker': ticker,
-            'strategy': strategy_name,
-            'initial_capital': initial_capital,
-            'final_equity': report['final_equity'],
-            'pnl': report['pnl'],
-            'pnl_pct': report['pnl_pct'],
-            'total_trades': report['trades_executed'],
-            'completed_trades': report.get('completed_trades', 0),
-            'winning_trades': report.get('winning_trades', 0),
-            'losing_trades': report.get('completed_trades', 0) - report.get('winning_trades', 0),
-            'win_rate': report.get('win_rate', 0),
-            'final_position': report['final_position'],
-            'iterations': report['iterations']
-        }
-        
-    except Exception as e:
-        print(f"\n{'='*80}")
-        print(f"❌ Backtest Error")
-        print(f"{'='*80}")
-        print(f"Error: {e}")
-        import traceback
-        traceback.print_exc()
-        return None
-        
-    finally:
-        if log_file:
-            sys.stdout = original_stdout
-            log_file.close()
-
-
-# ==========================================
-# Bulk Backtest
+# Helper Functions
 # ==========================================
 
 def get_trading_dates(start_date: str, end_date: str, trading_days_only: bool = True) -> List[str]:
@@ -228,6 +64,127 @@ def get_trading_dates(start_date: str, end_date: str, trading_days_only: bool = 
     return dates
 
 
+class OutputRedirector:
+    """Context manager to redirect stdout to a file."""
+    
+    def __init__(self, filepath: str):
+        self.filepath = filepath
+        self.original_stdout = None
+        self.log_file = None
+    
+    def __enter__(self):
+        self.original_stdout = sys.stdout
+        self.log_file = open(self.filepath, 'w', encoding='utf-8')
+        sys.stdout = self.log_file
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        sys.stdout = self.original_stdout
+        if self.log_file:
+            self.log_file.close()
+        return False
+
+
+# ==========================================
+# Single Day Wrapper (with logging)
+# ==========================================
+
+def run_single_day_with_logging(
+    ticker: str,
+    date_str: str,
+    strategy_name: str,
+    initial_capital: float,
+    log_dir: Optional[str] = None,
+    verbose: bool = False
+) -> Optional[Dict]:
+    """
+    Run backtest for a single day with optional log file output.
+    
+    This is a thin wrapper around run_backtest that adds:
+    - Log file redirection
+    - Consistent result formatting for bulk analysis
+    
+    Args:
+        ticker: Stock ticker
+        date_str: Date 'YYYY-MM-DD'
+        strategy_name: Strategy key
+        initial_capital: Starting capital
+        log_dir: Directory for log files (None = no logging)
+        verbose: Print detailed output
+        
+    Returns:
+        Results dictionary or None on failure
+    """
+    
+    # Determine if we should redirect to log file
+    log_file_path = None
+    if log_dir:
+        log_file_path = str(Path(log_dir) / f"{date_str}_{strategy_name}.log")
+    
+    try:
+        if log_file_path:
+            # Run with output redirected to log file
+            with OutputRedirector(log_file_path):
+                result = run_backtest(
+                    ticker=ticker,
+                    strategy_name=strategy_name,
+                    trading_date=date_str,
+                    initial_capital=initial_capital,
+                    enable_chart=False,  # No charts for bulk runs
+                    auto_open_browser=False,
+                    output_dir=log_dir,
+                    verbose=verbose
+                )
+        else:
+            # Run normally
+            result = run_backtest(
+                ticker=ticker,
+                strategy_name=strategy_name,
+                trading_date=date_str,
+                initial_capital=initial_capital,
+                enable_chart=False,
+                auto_open_browser=False,
+                verbose=verbose
+            )
+        
+        if result is None:
+            return None
+        
+        # Format result for bulk analysis
+        return {
+            'date': date_str,
+            'ticker': ticker,
+            'strategy': strategy_name,
+            'initial_capital': initial_capital,
+            'final_equity': result.get('final_equity', initial_capital),
+            'pnl': result.get('pnl', 0),
+            'pnl_pct': result.get('pnl_pct', 0),
+            'total_trades': result.get('trades_executed', 0),
+            'completed_trades': result.get('completed_trades', 0),
+            'winning_trades': result.get('winning_trades', 0),
+            'losing_trades': result.get('completed_trades', 0) - result.get('winning_trades', 0),
+            'win_rate': result.get('win_rate', 0),
+            'final_position': result.get('final_position', 0),
+            'iterations': result.get('iterations', 0)
+        }
+        
+    except Exception as e:
+        # Log error
+        if log_file_path:
+            with open(log_file_path, 'a', encoding='utf-8') as f:
+                f.write(f"\n\n❌ ERROR: {e}\n")
+                import traceback
+                traceback.print_exc(file=f)
+        else:
+            print(f"❌ Error running backtest for {date_str}: {e}")
+        
+        return None
+
+
+# ==========================================
+# Bulk Backtest
+# ==========================================
+
 def run_bulk_backtest(
     ticker: str,
     start_date: str,
@@ -235,10 +192,14 @@ def run_bulk_backtest(
     strategies: List[str],
     trading_days_only: bool = True,
     consecutive_capital: bool = True,
-    output_dir: str = 'bulk_backtest_results'
+    output_dir: str = 'bulk_backtest_results',
+    verbose: bool = False
 ) -> pd.DataFrame:
     """
     Run bulk backtest across multiple dates and strategies.
+    
+    Uses run_backtest from backtest_runner for each day to ensure
+    consistent behavior with single-day backtests.
     
     Args:
         ticker: Stock ticker
@@ -248,6 +209,7 @@ def run_bulk_backtest(
         trading_days_only: Skip weekends
         consecutive_capital: Use previous day's ending equity as next day's starting capital
         output_dir: Output directory
+        verbose: Print detailed output per day
         
     Returns:
         DataFrame with all results
@@ -291,13 +253,14 @@ def run_bulk_backtest(
             print(f"[{progress:5.1f}%] {date_str} - {strategy_name} (${current_capital:,.0f})...",
                   end=' ', flush=True)
             
-            result = run_single_day(
+            # Run single day backtest using shared logic
+            result = run_single_day_with_logging(
                 ticker=ticker,
                 date_str=date_str,
                 strategy_name=strategy_name,
                 initial_capital=current_capital,
                 log_dir=str(log_dir),
-                verbose=False
+                verbose=verbose
             )
             
             if result:
@@ -468,6 +431,12 @@ Available Strategies:
         help='Output directory (default: bulk_backtest_results)'
     )
     
+    parser.add_argument(
+        '--verbose', '-v',
+        action='store_true',
+        help='Verbose output for each day'
+    )
+    
     args = parser.parse_args()
     
     # Determine strategies
@@ -494,7 +463,8 @@ Available Strategies:
         strategies=strategies,
         trading_days_only=args.trading_days_only,
         consecutive_capital=not args.no_consecutive_capital,
-        output_dir=args.output_dir
+        output_dir=args.output_dir,
+        verbose=args.verbose
     )
     
     # Generate summaries
