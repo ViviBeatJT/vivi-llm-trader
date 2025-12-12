@@ -255,6 +255,26 @@ def register_default_strategies():
         pass
     
     try:
+        from src.strategies.churn_moderate_aggressive_strategy import ChurnModerateAggressiveStrategy
+        StrategyRegistry.register(
+            'churn_moderate',
+            ChurnModerateAggressiveStrategy,
+            name='Churn Moderate Aggressive Strategy',
+            description='Trades near Bollinger Bands, captures more opportunities',
+            default_params={
+                'bb_period': 20,
+                'bb_std_dev': 2.0,
+                'entry_threshold': 0.85,
+                'exit_threshold': 0.60,
+                'stop_loss_threshold': 0.10,
+                'monitor_interval_seconds': 60,
+            },
+            chart_file='backtest_churn_moderate.html'
+        )
+    except ImportError:
+        pass
+    
+    try:
         from src.strategies.trend_aware_strategy import TrendAwareStrategy
         StrategyRegistry.register(
             'trend_aware',
