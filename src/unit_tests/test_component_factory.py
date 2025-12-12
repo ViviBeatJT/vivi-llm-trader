@@ -15,7 +15,7 @@ Run with:
 
 import pytest
 from unittest.mock import Mock, patch
-from src.factory.component_factory import (
+from src.config.component_factory import (
     TradingMode,
     StrategyConfig,
     StrategyRegistry,

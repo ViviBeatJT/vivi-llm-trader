@@ -144,7 +144,7 @@ def main():
         epilog="""
 Examples:
     # 基本使用
-    python -m src.runner.live_runner --ticker TSLA --mode paper
+    python -m src.runner.live_runner --ticker TSLA --mode paper --finance-preset small
     
     # 使用预设
     python -m src.runner.live_runner --ticker AAPL --preset conservative --capital 5000
@@ -185,6 +185,9 @@ Modes:
     parser.add_argument('--preset', '-p', type=str, default=None,
                         choices=['conservative', 'moderate', 'aggressive'],
                         help='Strategy preset')
+    parser.add_argument('--monitor_frequency', type=str, default=None,
+                        choices=['fast', 'medium', 'slow'],
+                        help='How frequency monitor the stock')
     parser.add_argument('--stop-loss', type=float, default=None,
                         help='Stop loss percentage (e.g., 0.02 for 2%%)')
     parser.add_argument('--take-profit', type=float, default=None,
@@ -222,6 +225,7 @@ Modes:
         mode=args.mode,
         finance_preset=args.finance_preset,
         strategy_preset=args.preset,
+        monitor_frequency=args.monitor_frequency
     )
 
     # 覆盖参数

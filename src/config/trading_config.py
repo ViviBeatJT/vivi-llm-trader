@@ -144,9 +144,9 @@ DEFAULT_DATA_CONFIG = DataConfig()
 
 # 预设配置
 DATA_PRESETS = {
-    'scalping': DataConfig(timeframe_value=1, lookback_minutes=60, step_seconds=10),
-    'intraday': DataConfig(timeframe_value=5, lookback_minutes=300, step_seconds=30),
-    'swing': DataConfig(timeframe_value=15, lookback_minutes=1000, step_seconds=60),
+    'fast': DataConfig(timeframe_value=1, lookback_minutes=60, step_seconds=10),
+    'medium': DataConfig(timeframe_value=5, lookback_minutes=300, step_seconds=30),
+    'slow': DataConfig(timeframe_value=15, lookback_minutes=1000, step_seconds=60),
 }
 
 
@@ -457,7 +457,7 @@ def get_full_config(
     
     # 使用预设
     finance_preset: Optional[str] = None,
-    data_preset: Optional[str] = None,
+    monitor_frequency: Optional[str] = None,
     strategy_preset: Optional[str] = None,
     
     # 完整覆盖
@@ -492,7 +492,7 @@ def get_full_config(
     """
     # 加载预设或默认
     fin = FINANCE_PRESETS.get(finance_preset, DEFAULT_FINANCE_CONFIG) if finance is None else finance
-    dat = DATA_PRESETS.get(data_preset, DEFAULT_DATA_CONFIG) if data is None else data
+    dat = DATA_PRESETS.get(monitor_frequency, DEFAULT_DATA_CONFIG) if data is None else data
     tim = DEFAULT_TIME_CONFIG if time is None else time
     sys = DEFAULT_SYSTEM_CONFIG if system is None else system
     
