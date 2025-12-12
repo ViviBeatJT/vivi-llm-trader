@@ -1,214 +1,472 @@
-# src/live/live_runner.py
+# src/runner/live_runner.py
 
-from datetime import datetime
-import os
-from dotenv import load_dotenv
+"""
+Simplified Live Trading Runner
 
-# --- Core Modules ---
-from src.cache.trading_cache import TradingCache
-from src.manager.position_manager import PositionManager
-from src.data_fetcher.alpaca_data_fetcher import AlpacaDataFetcher
-from src.engine.live_engine import LiveEngine
+This runner is a thin wrapper around TradingEngine.
+It handles:
+1. Command-line argument parsing
+2. Component initialization via factory
+3. API position synchronization
+4. Running the engine in live mode
+
+Usage:
+    python live_runner.py --strategy moderate --ticker TSLA --mode paper
+    python live_runner.py --strategy trend_aware --ticker AAPL --mode simulation
+    python live_runner.py --strategy mean_reversion --mode live  # ⚠️ Real money!
+"""
+
+from datetime import datetime, timezone
+import argparse
+from pathlib import Path
+import threading
+import time as time_module
+
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 
-# --- Executors ---
-from src.executor.simulation_executor import SimulationExecutor
-from src.executor.alpaca_trade_executor import AlpacaExecutor
+from src.engine.trading_engine import (
+    TradingEngine, 
+    EngineConfig, 
+    TimeConfig, 
+    FinanceConfig, 
+    DataConfig
+)
+from src.factory.component_factory import (
+    ComponentFactory, 
+    StrategyRegistry, 
+    TradingMode
+)
 
-# --- Strategies ---
-from src.strategies.mean_reversion_strategy import MeanReversionStrategy
-from src.strategies.gemini_strategy import GeminiStrategy
-
-load_dotenv()
 
 # ==========================================
-# 1. Configuration
+# Default Configuration
 # ==========================================
 
-# 交易模式: 'paper' = 模拟盘, 'live' = 实盘, 'simulation' = 本地模拟（不连接 Alpaca）
-TRADING_MODE = 'paper'  # ⚠️ 谨慎选择！'live' 会执行真实交易
+DEFAULT_TICKER = "TSLA"
+DEFAULT_STRATEGY = "moderate"
+DEFAULT_MODE = "paper"
 
-# 财务参数（仅用于 simulation 模式）
-FINANCE_PARAMS = {
-    'INITIAL_CAPITAL': 100000.0,
-    'COMMISSION_RATE': 0.0003,
-    'SLIPPAGE_RATE': 0.0001,
-    'MIN_LOT_SIZE': 10,
-    'MAX_ALLOCATION': 0.2,
-    'STAMP_DUTY_RATE': 0.001,
-}
+DEFAULT_INITIAL_CAPITAL = 1000.0
+DEFAULT_INTERVAL_SECONDS = 30
+DEFAULT_LOOKBACK_MINUTES = 300
 
-# 交易设置
-TICKER = "TSLA"
-
-# 运行参数
-INTERVAL_SECONDS = 300        # 策略运行间隔（秒），60 = 1分钟
-LOOKBACK_MINUTES = 120       # 数据回溯时间（分钟）
-DATA_TIMEFRAME = TimeFrame(5, TimeFrameUnit.Minute)  # K线周期：5分钟
-
-# 交易时间控制
-RESPECT_MARKET_HOURS = True  # 是否只在美股交易时间内运行
-MAX_RUNTIME_MINUTES = None   # 最大运行时间（分钟），None = 无限制
-
-# 策略选择: 'mean_reversion' or 'gemini_ai'
-SELECTED_STRATEGY = 'mean_reversion'
-
-# 是否在启动时从 API 同步仓位状态（仅 paper/live 模式有效）
 SYNC_POSITION_ON_START = True
+CHART_UPDATE_INTERVAL = 30
+
 
 # ==========================================
-# 2. Signal Callback (可选)
+# Chart Update Thread
 # ==========================================
 
-def on_signal_received(signal_dict: dict, price: float, timestamp: datetime):
+class ChartUpdater(threading.Thread):
+    """Background thread for updating charts during live trading."""
+    
+    def __init__(self, 
+                 visualizer,
+                 strategy,
+                 position_manager,
+                 ticker: str,
+                 update_interval: int = 30):
+        super().__init__()
+        self.visualizer = visualizer
+        self.strategy = strategy
+        self.position_manager = position_manager
+        self.ticker = ticker
+        self.update_interval = update_interval
+        self._running = True
+        self.daemon = True
+    
+    def run(self):
+        """Run chart update loop."""
+        print(f"\n📊 Chart updater started (every {self.update_interval}s)")
+        
+        while self._running:
+            try:
+                strategy_df = self.strategy.get_history_data(self.ticker)
+                
+                if strategy_df.empty:
+                    time_module.sleep(self.update_interval)
+                    continue
+                
+                current_price = strategy_df.iloc[-1]['close']
+                account_status = self.position_manager.get_account_status(current_price)
+                
+                self.visualizer.update_data(
+                    market_data=strategy_df,
+                    trade_log=self.position_manager.get_trade_log(),
+                    current_equity=account_status.get('equity', 0),
+                    current_position=account_status.get('position', 0),
+                    timestamp=datetime.now(timezone.utc)
+                )
+                
+                time_module.sleep(self.update_interval)
+                
+            except Exception as e:
+                print(f"⚠️ Chart update error: {e}")
+                time_module.sleep(self.update_interval)
+    
+    def stop(self):
+        """Stop the updater."""
+        self._running = False
+
+
+# ==========================================
+# Signal Callback
+# ==========================================
+
+def default_signal_callback(signal_dict: dict, price: float, timestamp: datetime):
+    """Default callback for signal notifications."""
+    signal = signal_dict.get('signal', 'UNKNOWN')
+    reason = signal_dict.get('reason', '')
+    
+    if signal in ['BUY', 'SELL', 'SHORT', 'COVER']:
+        if '强制平仓' in reason or '收盘' in reason or 'force' in reason.lower():
+            print(f"   🔔 Market Close Force Close")
+
+
+# ==========================================
+# Main Runner
+# ==========================================
+
+def run_live(
+    ticker: str,
+    strategy_name: str,
+    mode: str,  # 'simulation', 'paper', 'live'
+    initial_capital: float = DEFAULT_INITIAL_CAPITAL,
+    interval_seconds: int = DEFAULT_INTERVAL_SECONDS,
+    lookback_minutes: int = DEFAULT_LOOKBACK_MINUTES,
+    max_runtime_minutes: int = None,
+    enable_chart: bool = True,
+    auto_open_browser: bool = True,
+    sync_position: bool = SYNC_POSITION_ON_START,
+    output_dir: str = "live_trading",
+    verbose: bool = True
+) -> dict:
     """
-    信号回调函数 - 可用于发送通知、记录日志等。
+    Run live trading.
     
     Args:
-        signal_dict: 策略返回的信号字典
-        price: 当前价格
-        timestamp: 时间戳
-    """
-    signal = signal_dict.get('signal', 'UNKNOWN')
-    confidence = signal_dict.get('confidence_score', 0)
-    
-    # 示例：只对高置信度信号发送通知
-    if signal in ['BUY', 'SELL'] and confidence >= 7:
-        print(f"📢 高置信度信号: {signal} @ ${price:.2f} (置信度: {confidence}/10)")
+        ticker: Stock ticker symbol
+        strategy_name: Strategy key from registry
+        mode: Trading mode ('simulation', 'paper', 'live')
+        initial_capital: Starting capital
+        interval_seconds: Update interval in seconds
+        lookback_minutes: Data lookback period
+        max_runtime_minutes: Maximum runtime (None = unlimited)
+        enable_chart: Whether to generate chart
+        auto_open_browser: Auto-open chart in browser
+        sync_position: Sync position from API on start
+        output_dir: Output directory for results
+        verbose: Print detailed output
         
-        # 这里可以添加：
-        # - 发送邮件通知
-        # - 发送 Telegram/Discord 消息
-        # - 写入数据库
-        # - 等等...
-
-# ==========================================
-# 3. Initialization
-# ==========================================
-
-def main():
-    print("\n" + "="*60)
-    print("🚀 实盘交易系统初始化")
-    print("="*60)
-    print(f"   交易标的: {TICKER}")
-    print(f"   交易模式: {TRADING_MODE.upper()}")
-    print(f"   策略: {SELECTED_STRATEGY}")
-    print(f"   运行间隔: {INTERVAL_SECONDS} 秒")
-    print(f"   K线周期: {DATA_TIMEFRAME.amount} {DATA_TIMEFRAME.unit.name}")
+    Returns:
+        Trading results dictionary
+    """
+    # Convert mode string to enum
+    trading_mode = TradingMode(mode)
     
-    if TRADING_MODE == 'live':
+    print("\n" + "="*70)
+    print(f"🚀 Live Trading Runner")
+    print("="*70)
+    print(f"   Mode: {mode.upper()}")
+    print(f"   Ticker: {ticker}")
+    print(f"   Strategy: {strategy_name}")
+    print(f"   Initial Capital: ${initial_capital:,.2f}")
+    print(f"   Interval: {interval_seconds}s")
+    
+    # Live mode warning
+    if trading_mode == TradingMode.LIVE:
         print("\n" + "⚠️"*20)
-        print("   警告: 您正在使用实盘模式！")
-        print("   所有交易将使用真实资金！")
+        print("   WARNING: LIVE TRADING MODE!")
+        print("   All trades will use REAL MONEY!")
         print("⚠️"*20)
         
-        confirm = input("\n确认启动实盘交易? (输入 'YES' 确认): ")
+        confirm = input("\nConfirm live trading? (type 'YES' to confirm): ")
         if confirm != 'YES':
-            print("已取消启动。")
-            return
+            print("Cancelled.")
+            return {}
     
-    # A. Data Fetcher（包含账户和持仓 API）
-    is_paper = TRADING_MODE in ['paper', 'simulation']
-    data_fetcher = AlpacaDataFetcher(paper=is_paper)
+    # Create output directory
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+    charts_dir = Path(output_dir) / "charts"
+    charts_dir.mkdir(parents=True, exist_ok=True)
     
-    # B. Cache System
-    cache_path = os.path.join('cache', f'{TICKER}_live_cache.json')
-    cache = TradingCache(cache_path)
+    # ==========================================
+    # 1. Create Configuration
+    # ==========================================
     
-    # C. Executor & Position Manager
-    if TRADING_MODE == 'simulation':
-        print("🔧 执行器: 本地模拟")
-        executor = SimulationExecutor(FINANCE_PARAMS)
-        # 本地模拟不需要 data_fetcher
-        position_manager = PositionManager(executor, FINANCE_PARAMS)
-    elif TRADING_MODE == 'paper':
-        print("🔧 执行器: Alpaca 模拟盘 (Paper)")
-        executor = AlpacaExecutor(paper=True, max_allocation_rate=FINANCE_PARAMS['MAX_ALLOCATION'])
-        # 传入 data_fetcher 以便同步仓位
-        position_manager = PositionManager(executor, FINANCE_PARAMS, data_fetcher=data_fetcher)
-    elif TRADING_MODE == 'live':
-        print("🔧 执行器: Alpaca 实盘 (Live)")
-        executor = AlpacaExecutor(paper=False, max_allocation_rate=FINANCE_PARAMS['MAX_ALLOCATION'])
-        position_manager = PositionManager(executor, FINANCE_PARAMS, data_fetcher=data_fetcher)
-    else:
-        raise ValueError(f"无效的交易模式: {TRADING_MODE}")
+    finance_config = FinanceConfig(
+        initial_capital=initial_capital,
+        commission_rate=0.0003,
+        slippage_rate=0.0001,
+        min_lot_size=1,
+        max_allocation=0.95
+    )
     
-    # D. 从 API 同步仓位状态（如果启用）
-    if SYNC_POSITION_ON_START and TRADING_MODE in ['paper', 'live']:
-        print(f"\n🔄 正在从 API 同步 {TICKER} 仓位状态...")
-        sync_success = position_manager.sync_from_api(TICKER)
+    time_config = TimeConfig()
+    
+    data_config = DataConfig(
+        lookback_minutes=lookback_minutes,
+        timeframe=TimeFrame(5, TimeFrameUnit.Minute),
+        step_seconds=interval_seconds
+    )
+    
+    # ==========================================
+    # 2. Create Components
+    # ==========================================
+    
+    print(f"\n🔧 Initializing Components...")
+    
+    # Data fetcher
+    data_fetcher = ComponentFactory.create_data_fetcher(trading_mode)
+    
+    # Executor
+    executor = ComponentFactory.create_executor(
+        trading_mode, 
+        finance_config.to_dict()
+    )
+    
+    # Position manager (with data_fetcher for API sync)
+    position_manager = ComponentFactory.create_position_manager(
+        executor, 
+        finance_config.to_dict(),
+        data_fetcher=data_fetcher if trading_mode != TradingMode.SIMULATION else None
+    )
+    
+    # Strategy
+    strategy = StrategyRegistry.create(strategy_name)
+    
+    # Sync position from API
+    if sync_position and trading_mode in [TradingMode.PAPER, TradingMode.LIVE]:
+        print(f"\n🔄 Syncing position from API for {ticker}...")
+        sync_success = position_manager.sync_from_api(ticker)
         if not sync_success:
-            print("⚠️ 仓位同步失败，将使用本地初始状态")
+            print("⚠️ Position sync failed, using local initial state")
     
-    # E. Strategy
-    print(f"\n🧠 策略: {SELECTED_STRATEGY}")
+    # Visualizer
+    visualizer = None
+    chart_updater = None
+    chart_file = None
     
-    if SELECTED_STRATEGY == 'mean_reversion':
-        strategy = MeanReversionStrategy(
-            bb_period=20,
-            bb_std_dev=2,
-            rsi_window=14,
-            rsi_oversold=30,
-            rsi_overbought=70,
-            max_history_bars=500
+    if enable_chart:
+        process_id = f"{ticker}_{strategy_name}_{mode}"
+        chart_file = str(charts_dir / f"{process_id}.html")
+        
+        visualizer = ComponentFactory.create_visualizer(
+            ticker=ticker,
+            output_file=chart_file,
+            auto_open=auto_open_browser,
+            initial_capital=initial_capital
         )
-    elif SELECTED_STRATEGY == 'gemini_ai':
-        strategy = GeminiStrategy(
-            cache=cache,
-            use_cache=True,
-            temperature=0.2,
-            delay_seconds=2,
-            bb_period=20,
-            rsi_window=14,
-            max_history_bars=500
-        )
-    else:
-        raise ValueError(f"无效的策略: {SELECTED_STRATEGY}")
+        print(f"   Chart: {chart_file}")
     
     # ==========================================
-    # 4. Create and Run Live Engine
+    # 3. Create Engine
     # ==========================================
     
-    live_engine = LiveEngine(
-        ticker=TICKER,
+    engine_config = EngineConfig(
+        ticker=ticker,
         strategy=strategy,
         position_manager=position_manager,
         data_fetcher=data_fetcher,
-        cache=cache,
-        interval_seconds=INTERVAL_SECONDS,
-        lookback_minutes=LOOKBACK_MINUTES,
-        timeframe=DATA_TIMEFRAME,
-        respect_market_hours=RESPECT_MARKET_HOURS,
-        max_runtime_minutes=MAX_RUNTIME_MINUTES,
-        on_signal_callback=on_signal_received
+        executor=executor,
+        time_config=time_config,
+        finance_config=finance_config,
+        data_config=data_config,
+        visualizer=visualizer,
+        on_signal_callback=default_signal_callback,
+        respect_market_hours=True,
+        verbose=verbose
     )
     
-    # 运行引擎
-    report = live_engine.run()
+    engine = TradingEngine(engine_config, mode='live')
+    
+    # Start chart updater thread
+    if visualizer:
+        chart_updater = ChartUpdater(
+            visualizer=visualizer,
+            strategy=strategy,
+            position_manager=position_manager,
+            ticker=ticker,
+            update_interval=CHART_UPDATE_INTERVAL
+        )
+        chart_updater.start()
     
     # ==========================================
-    # 5. Final Report
+    # 4. Run Engine
     # ==========================================
     
-    print("\n" + "="*60)
-    print("💰 最终结果")
-    print("="*60)
-    print(f"   运行时长: {report['runtime_seconds'] / 60:.1f} 分钟")
-    print(f"   迭代次数: {report['iterations']}")
-    print(f"   交易信号: {report['signals']}")
-    print(f"   执行交易: {report['trades_executed']}")
-    print(f"   最终权益: ${report['final_equity']:,.2f}")
-    print("="*60)
+    try:
+        report = engine.run(
+            max_runtime_minutes=max_runtime_minutes,
+            interval_seconds=interval_seconds
+        )
+    except KeyboardInterrupt:
+        print("\n\n⚠️ Interrupted by user")
+        report = engine._generate_report(datetime.now(timezone.utc))
+    finally:
+        # Stop chart updater
+        if chart_updater:
+            print("\n🛑 Stopping chart updater...")
+            chart_updater.stop()
+            chart_updater.join(timeout=2)
     
-    # 打印交易日志
+    # Print report
+    engine.print_report(report)
+    
+    # ==========================================
+    # 5. Print Trade Log
+    # ==========================================
+    
     trade_log = position_manager.get_trade_log()
+    
     if trade_log is not None and not trade_log.empty:
-        print("\n📝 交易日志:")
+        print("\n📝 Trade Log:")
         display_log = trade_log[['time', 'type', 'qty', 'price', 'fee', 'net_pnl']].copy()
         display_log['time'] = display_log['time'].dt.strftime('%Y-%m-%d %H:%M')
-        print(display_log.to_markdown(index=False, floatfmt=".2f"))
+        
+        try:
+            print(display_log.to_markdown(index=False, floatfmt=".2f"))
+        except Exception:
+            print(display_log.to_string(index=False))
     else:
-        print("\n🤷 无交易记录。")
+        print("\n🤷 No trades executed.")
+    
+    # Final summary
+    print(f"\n" + "="*70)
+    print(f"✅ Live Trading Complete!")
+    print("="*70)
+    
+    if chart_file:
+        print(f"   📊 Chart: {chart_file}")
+    
+    print(f"   💰 Final Equity: ${report.get('final_equity', 0):,.2f}")
+    print(f"   📈 PnL: ${report.get('pnl', 0):,.2f} ({report.get('pnl_pct', 0):+.2f}%)")
+    print("="*70 + "\n")
+    
+    return report
+
+
+def main():
+    """Main entry point with CLI argument parsing."""
+    
+    parser = argparse.ArgumentParser(
+        description='Simplified Live Trading Runner',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+    python live_runner.py --strategy moderate --ticker TSLA --mode paper
+    python live_runner.py --strategy trend_aware --ticker AAPL --mode simulation
+    python live_runner.py --strategy mean_reversion --mode live  # ⚠️ Real money!
+
+Modes:
+    simulation  - Local simulation (no API calls for trades)
+    paper       - Alpaca paper trading (simulated money)
+    live        - Alpaca live trading (REAL MONEY!)
+
+Available Strategies:
+""" + "\n".join([f"    {k}: {v}" for k, v in StrategyRegistry.list_strategies().items()])
+    )
+    
+    parser.add_argument(
+        '--ticker', '-t',
+        type=str,
+        default=DEFAULT_TICKER,
+        help=f'Stock ticker (default: {DEFAULT_TICKER})'
+    )
+    
+    parser.add_argument(
+        '--strategy', '-s',
+        type=str,
+        default=DEFAULT_STRATEGY,
+        choices=StrategyRegistry.get_all_keys(),
+        help=f'Strategy name (default: {DEFAULT_STRATEGY})'
+    )
+    
+    parser.add_argument(
+        '--mode', '-m',
+        type=str,
+        default=DEFAULT_MODE,
+        choices=['simulation', 'paper', 'live'],
+        help=f'Trading mode (default: {DEFAULT_MODE})'
+    )
+    
+    parser.add_argument(
+        '--capital', '-c',
+        type=float,
+        default=DEFAULT_INITIAL_CAPITAL,
+        help=f'Initial capital (default: {DEFAULT_INITIAL_CAPITAL})'
+    )
+    
+    parser.add_argument(
+        '--interval', '-i',
+        type=int,
+        default=DEFAULT_INTERVAL_SECONDS,
+        help=f'Update interval in seconds (default: {DEFAULT_INTERVAL_SECONDS})'
+    )
+    
+    parser.add_argument(
+        '--lookback',
+        type=int,
+        default=DEFAULT_LOOKBACK_MINUTES,
+        help=f'Data lookback in minutes (default: {DEFAULT_LOOKBACK_MINUTES})'
+    )
+    
+    parser.add_argument(
+        '--max-runtime',
+        type=int,
+        default=None,
+        help='Maximum runtime in minutes (default: unlimited)'
+    )
+    
+    parser.add_argument(
+        '--no-chart',
+        action='store_true',
+        help='Disable chart generation'
+    )
+    
+    parser.add_argument(
+        '--no-browser',
+        action='store_true',
+        help='Don\'t auto-open chart in browser'
+    )
+    
+    parser.add_argument(
+        '--no-sync',
+        action='store_true',
+        help='Don\'t sync position from API on start'
+    )
+    
+    parser.add_argument(
+        '--output-dir', '-o',
+        type=str,
+        default='live_trading',
+        help='Output directory (default: live_trading)'
+    )
+    
+    parser.add_argument(
+        '--quiet', '-q',
+        action='store_true',
+        help='Reduce output verbosity'
+    )
+    
+    args = parser.parse_args()
+    
+    # Run live trading
+    run_live(
+        ticker=args.ticker,
+        strategy_name=args.strategy,
+        mode=args.mode,
+        initial_capital=args.capital,
+        interval_seconds=args.interval,
+        lookback_minutes=args.lookback,
+        max_runtime_minutes=args.max_runtime,
+        enable_chart=not args.no_chart,
+        auto_open_browser=not args.no_browser,
+        sync_position=not args.no_sync,
+        output_dir=args.output_dir,
+        verbose=not args.quiet
+    )
 
 
 if __name__ == '__main__':
