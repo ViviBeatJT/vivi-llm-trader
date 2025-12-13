@@ -144,7 +144,7 @@ DEFAULT_DATA_CONFIG = DataConfig()
 
 # 预设配置
 DATA_PRESETS = {
-    'fast': DataConfig(timeframe_value=1, lookback_minutes=60, step_seconds=10),
+    'fast': DataConfig(timeframe_value=1, lookback_minutes=60, step_seconds=30),
     'medium': DataConfig(timeframe_value=5, lookback_minutes=300, step_seconds=30),
     'slow': DataConfig(timeframe_value=15, lookback_minutes=1000, step_seconds=60),
 }
@@ -165,7 +165,7 @@ class SimpleUpTrendConfig:
     # 布林带
     bb_period: int = 20
     bb_std_dev: float = 2.0
-    bb_narrow_threshold = 0.02
+    bb_narrow_threshold = 0.012
     
     # ADX（趋势强度）
     adx_period: int = 14
@@ -193,12 +193,12 @@ class SimpleUpTrendConfig:
     downtrend_sell_threshold : float = 0.40,
     
     # ---------- 止损参数 ----------
-    quick_stop_loss: float = 0.0005     # 快速止损 0.05%（下降趋势）
-    normal_stop_loss: float = 0.001     # 正常止损 0.1%
+    quick_stop_loss: float = 0.001     # 快速止损 0.1%（下降趋势）
+    normal_stop_loss: float = 0.005     # 正常止损 0.5%
     
     # ---------- 动态仓位管理 ----------
-    reduce_allocation_threshold: float = 0.001   # 亏损 0.1% 触发减仓
-    reduce_allocation_ratio: float = 0.5        # 减到原来的 50%
+    reduce_allocation_threshold: float = 0.005   # 亏损 0.1% 触发减仓
+    reduce_allocation_ratio: float = 0.8        # 减到原来的 50%
     recovery_threshold: float = 0.005           # 盈利 0.5% 开始恢复
     recovery_step: float = 0.1                  # 每次恢复 10%
     min_allocation: float = 0.25                # 最小仓位 25%
@@ -208,7 +208,7 @@ class SimpleUpTrendConfig:
     max_history_bars: int = 500
     
     # cooldown_bars: int = 5                    # 止损后冷却 5 根K线
-    cooldown_minutes: int = 10       
+    cooldown_minutes: int = 1       
     
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典"""

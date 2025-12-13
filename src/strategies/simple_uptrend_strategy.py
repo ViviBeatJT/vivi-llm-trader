@@ -573,6 +573,7 @@ class SimpleUpTrendStrategy:
                    ticker: str,
                    new_data: pd.DataFrame,
                    current_position: float = 0.0,
+                   current_price: float = 0.0,
                    avg_cost: float = 0.0,
                    verbose: bool = False,
                    is_market_close: bool = False,
@@ -593,7 +594,8 @@ class SimpleUpTrendStrategy:
 
         # ========== 2. 计算技术指标 ==========
         close = df['close']
-        current_price = close.iloc[-1]
+        if current_price == 0.0:
+            current_price = close.iloc[-1]
 
         # 布林带
         bb_middle = close.rolling(window=self.bb_period, min_periods=1).mean()
@@ -675,7 +677,7 @@ class SimpleUpTrendStrategy:
             if pnl_pct <= -stop_loss:
                 signal = 'SELL'
                 confidence = 10
-                reason = f"🛑 止损! 亏损 {pnl_pct*100:.4f}% (阈值: {stop_loss*100:.4f}%)"
+                reason = f"🛑 止损! 亏损 {pnl_pct*100:.4f}% (阈值: {stop_loss*100:.4f}%) AVE COST: {avg_cost}"
 
                 self._reduce_allocation(ticker, "止损触发")
                 self._start_cooldown(ticker, current_time, is_stop_loss=True)

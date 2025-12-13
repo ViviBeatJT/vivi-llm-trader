@@ -1,3 +1,4 @@
+# python -m src.data_fetcher.alpaca_data_downloader 
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
@@ -8,7 +9,7 @@ import os
 load_dotenv()
 
 # --- Configuration ---
-TICKER = 'SPLV'
+TICKER = 'TSLA'
 INTERVAL = '5Min'
 FILENAME = f'data/{TICKER}_{INTERVAL}_1year_data.csv' # Define the desired output filename
 

@@ -254,7 +254,11 @@ class TradingEngine:
         if df.empty:
             return {'status': 'no_data', 'iteration': self._iteration}
 
-        current_price = df.iloc[-1]['close']
+        current_price = self.data_fetcher.get_latest_price(
+            ticker=self.ticker,
+            current_time=current_time,
+        )
+        
         current_et = self._to_eastern(current_time)
 
         # Get account status
@@ -286,6 +290,7 @@ class TradingEngine:
                 ticker=self.ticker,
                 new_data=df,
                 current_position=current_position,
+                current_price=current_price,
                 avg_cost=avg_cost,
                 verbose=self.config.system.verbose,
                 is_market_close=is_force_close,

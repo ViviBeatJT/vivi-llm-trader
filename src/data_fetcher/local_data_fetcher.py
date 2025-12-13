@@ -45,7 +45,7 @@ class LocalDataFetcher(BaseDataFetcher):
     def __init__(self, 
                  data_dir: str = 'data/',
                  ticker: str = None,
-                 file_pattern: str = '{ticker}_5Min_1year_data.csv',
+                 file_pattern: str = '{ticker}_1Min_1year_data.csv',
                  verbose: bool = True):
         """
         Initialize the local data fetcher and load data.
@@ -251,7 +251,7 @@ class LocalDataFetcher(BaseDataFetcher):
         
         return filtered_df
     
-    def get_latest_price(self, ticker: str = None) -> float:
+    def get_latest_price(self, ticker: str = None,  current_time: Optional[datetime] = None) -> float:
         """
         Get the most recent closing price for a ticker.
         

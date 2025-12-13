@@ -8,7 +8,7 @@ from typing import Optional, Dict, Any, List
 
 # 导入 Alpaca 数据 API 客户端
 from alpaca.data.historical import StockHistoricalDataClient
-from alpaca.data.requests import StockBarsRequest
+from alpaca.data.requests import StockBarsRequest,StockLatestQuoteRequest,StockQuotesRequest
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 from alpaca.data.enums import DataFeed
 
@@ -130,7 +130,7 @@ class AlpacaDataFetcher:
         
         return ticker_df
 
-    def get_latest_price(self, ticker: str) -> float:
+    def get_latest_price(self, ticker: str, current_time: Optional[datetime] = None) -> float:
         """
         从 Alpaca 获取标的物的最新收盘价。
         
@@ -148,24 +148,37 @@ class AlpacaDataFetcher:
         start_time = end_time - timedelta(minutes=5)
         timestamp_str = self._format_timestamp(end_time)
 
-        request_params = StockBarsRequest(
-            symbol_or_symbols=[ticker],
-            timeframe=TimeFrame.Minute,
-            start=start_time.isoformat(),
-            end=end_time.isoformat(),
-            feed=DataFeed.IEX
-        )
-
         try:
-            bar_set = self.data_client.get_stock_bars(request_params)
-            df = bar_set.df
+            if not current_time:
+                request_params = StockLatestQuoteRequest(
+                    symbol_or_symbols=[ticker],
+                    feed=DataFeed.IEX
+                )
 
-            if df.empty:
-                raise ValueError(f"无法获取 {ticker} 的最新 K 线数据")
+                
+                latest_quote = self.data_client.get_stock_latest_quote(request_params)
+                latest_price = latest_quote[ticker].bid_price
 
-            latest_price = df.loc[ticker].iloc[-1]['close']
-            print(f"💰 [{timestamp_str}] {ticker} 最新价格: ${latest_price:.2f}")
-            return latest_price
+                return latest_price
+            else:
+                start_time = current_time - timedelta(minutes=1)
+                end_time = current_time
+
+                request_params = StockBarsRequest(
+                    symbol_or_symbols=[ticker],
+                    timeframe=TimeFrame.Minute, # 设置为分钟级别
+                    start=start_time.isoformat(),
+                    end=end_time.isoformat(),
+                )
+
+                bars_response = self.data_client.get_stock_bars(request_params)
+                bars_df = bars_response.df
+                
+                if not bars_df.empty:
+                    close_price = bars_df.iloc[0]['close'] 
+                    return close_price
+                else:
+                    print(f"在 {current_time} 这一分钟未找到 Bar 数据。")
             
         except Exception as e:
             print(f"❌ [{timestamp_str}] 获取 {ticker} 实时价格失败: {e}")

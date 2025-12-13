@@ -56,7 +56,7 @@ class BaseDataFetcher(ABC):
         pass
     
     @abstractmethod
-    def get_latest_price(self, ticker: str) -> float:
+    def get_latest_price(self, ticker: str, current_time: Optional[datetime] = None) -> float:
         """
         Get the most recent closing price for a ticker.
         
