@@ -77,7 +77,7 @@ class SimpleUpTrendStrategy:
                  # 上升趋势交易参数
                  uptrend_buy_low: float = 0.40,
                  uptrend_buy_high: float = 0.60,
-                 uptrend_take_profit: float = 0.03,
+                 uptrend_take_profit: float = 0.003,
 
                  # 震荡市交易参数
                  range_buy_threshold: float = 0.20,
@@ -202,6 +202,7 @@ class SimpleUpTrendStrategy:
         print(f"\n动态仓位管理:")
         print(f"  🛑 快速止损: {self.quick_stop_loss*100:.4f}% (下降趋势)")
         print(f"  🛑 正常止损: {self.normal_stop_loss*100:.4f}%")
+        print(f"  🛑 止盈: {self.uptrend_take_profit*100:.4f}%")
         print(f"  📉 减仓触发: 亏损 > {self.reduce_allocation_threshold*100:.1f}%")
         print(f"  📉 减仓比例: 减到 {self.reduce_allocation_ratio*100:.0f}%")
         print(f"  📈 恢复触发: 盈利 > {self.recovery_threshold*100:.1f}%")

@@ -804,6 +804,18 @@ class TestTakeProfitLogic(unittest.TestCase):
         
         self.assertEqual(signal, 'SELL')
         self.assertIn('止盈', reason)
+        
+    def test_take_profit_in_range(self):
+        """测试：上升趋势止盈"""
+        signal, conf, reason = self.strategy._ranging_strategy(
+            position=100,
+            price=103.1,  # 3% 盈利
+            bb_pos=0.50,
+            pnl_pct=0.031
+        )
+        
+        self.assertEqual(signal, 'SELL')
+        self.assertIn('止盈', reason)
     
     def test_hold_below_take_profit(self):
         """测试：未达止盈继续持有"""

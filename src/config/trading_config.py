@@ -179,7 +179,7 @@ class SimpleUpTrendConfig:
     # 上升趋势
     uptrend_buy_low: float = 0.30      # BB 位置下限
     uptrend_buy_high: float = 0.60     # BB 位置上限
-    uptrend_take_profit: float = 0.02  # 止盈 3%
+    uptrend_take_profit: float = 0.005  # 止盈 0.5%
     
     # 震荡市场
     range_buy_threshold: float = 0.15  # BB < 20% 买入
@@ -286,14 +286,14 @@ SIMPLE_UP_TREND_PRESETS = {
     'conservative': SimpleUpTrendConfig(
         quick_stop_loss=0.0003,
         normal_stop_loss=0.001,
-        uptrend_take_profit=0.02,
+        uptrend_take_profit=0.002,
         reduce_allocation_threshold=0.005,
     ),
     'moderate': SimpleUpTrendConfig(),  # 默认配置
     'aggressive': SimpleUpTrendConfig(
         quick_stop_loss=0.001,
         normal_stop_loss=0.003,
-        uptrend_take_profit=0.05,
+        uptrend_take_profit=0.01,
         uptrend_buy_low=0.30,
         uptrend_buy_high=0.70,
     ),
