@@ -12,7 +12,7 @@ It handles:
 
 Usage:
     python -m src.runner.backtest_runner --strategy moderate --ticker TSLA --date 2025-01-01
-    python -m src.runner.backtest_runner --strategy up_trend_aware --ticker SPLV --date 2024-12-06 --finance-preset small --monitor_frequency fast --local-data --data-dir "/Users/vivi/vivi-llm-trader/data/"
+    python -m src.runner.backtest_runner --strategy up_trend_aware --ticker SPLV --date 2025-12-05 --finance-preset small --monitor-frequency fast --local-data --data-dir "/Users/vivi/vivi-llm-trader/data/"
 """
 
 from datetime import datetime, timezone, timedelta
@@ -57,7 +57,7 @@ def run_backtest(
     ticker: str,
     strategy_name: str,
     trading_date: str,
-    initial_capital: float = DEFAULT_INITIAL_CAPITAL,
+    initial_capital: float = None,
     step_seconds: int = None,
     lookback_minutes: int = None,
     enable_chart: bool = True,
@@ -68,6 +68,7 @@ def run_backtest(
     local_data_dir: str = "data/",
     strategy_preset: str = None,
     monitor_frequency: str = None,
+    finance_preset: str = None,
 ) -> dict:
     """
     Run a single-day backtest.
@@ -76,7 +77,7 @@ def run_backtest(
         ticker: Stock ticker symbol
         strategy_name: Strategy key from registry
         trading_date: Date string 'YYYY-MM-DD'
-        initial_capital: Starting capital
+        initial_capital: Starting capital (None uses preset/default)
         step_seconds: Time step in seconds (None uses preset/default)
         lookback_minutes: Data lookback period (None uses preset/default)
         enable_chart: Whether to generate chart
@@ -87,6 +88,7 @@ def run_backtest(
         local_data_dir: Directory containing CSV files (when use_local_data=True)
         strategy_preset: Strategy preset ('conservative', 'moderate', 'aggressive')
         monitor_frequency: Data frequency preset ('fast', 'medium', 'slow')
+        finance_preset: Finance preset ('small', 'medium', 'large', 'paper')
 
     Returns:
         Backtest results dictionary
@@ -115,6 +117,7 @@ def run_backtest(
         mode='simulation',  # Backtest uses simulation mode
         strategy_preset=strategy_preset,
         monitor_frequency=monitor_frequency,
+        finance_preset=finance_preset,
     )
 
     # Override data config parameters if explicitly provided
@@ -122,6 +125,9 @@ def run_backtest(
         config.data.step_seconds = step_seconds
     if lookback_minutes is not None:
         config.data.lookback_minutes = lookback_minutes
+
+    # Get actual initial capital (from preset or explicit value)
+    actual_initial_capital = config.finance.initial_capital
 
     # Override system config parameters
     config.system.enable_chart = enable_chart
@@ -135,7 +141,8 @@ def run_backtest(
     print(f"   Date: {trading_date}")
     print(f"   Strategy: {strategy_name}" +
           (f" (preset: {strategy_preset})" if strategy_preset else ""))
-    print(f"   Initial Capital: ${initial_capital:,.2f}")
+    print(
+        f"   Finance: {finance_preset or 'default'} (${actual_initial_capital:,.2f})")
     print(f"   Monitor Frequency: {monitor_frequency or 'default'}")
     print(f"   Step: {config.data.step_seconds} seconds")
     print(f"   Lookback: {config.data.lookback_minutes} minutes")
@@ -182,7 +189,7 @@ def run_backtest(
             ticker=ticker,
             output_file=chart_file,
             auto_open=auto_open_browser,
-            initial_capital=initial_capital
+            initial_capital=actual_initial_capital
         )
         print(f"   Chart: {chart_file}")
 
@@ -248,12 +255,13 @@ def main():
 Examples:
     python -m src.runner.backtest_runner --strategy moderate --ticker TSLA --date 2024-12-05
     python -m src.runner.backtest_runner --strategy up_trend_aware --ticker AAPL --date 2024-12-06 --no-chart
-    python -m src.runner.backtest_runner --strategy mean_reversion --capital 5000
-    python -m src.runner.backtest_runner --strategy up_trend_aware --preset conservative --monitor-frequency fast
+    python -m src.runner.backtest_runner --strategy mean_reversion --finance-preset medium
+    python -m src.runner.backtest_runner --strategy up_trend_aware --preset conservative --monitor-frequency fast --finance-preset large
 
 Presets:
     Strategy: conservative, moderate, aggressive
     Monitor Frequency: fast (1min/10s), medium (5min/30s), slow (15min/60s)
+    Finance: small ($1k), medium ($5k), large ($25k), paper ($100k)
 
 Available Strategies:
 """ + "\n".join([f"    {k}: {v}" for k, v in StrategyRegistry.list_strategies().items()])
@@ -291,6 +299,14 @@ Available Strategies:
     )
 
     parser.add_argument(
+        '--finance-preset',
+        type=str,
+        default=None,
+        choices=['small', 'medium', 'large', 'paper'],
+        help='Finance preset (small: $1k, medium: $5k, large: $25k, paper: $100k)'
+    )
+
+    parser.add_argument(
         '--date', '-d',
         type=str,
         default=None,
@@ -300,8 +316,8 @@ Available Strategies:
     parser.add_argument(
         '--capital', '-c',
         type=float,
-        default=DEFAULT_INITIAL_CAPITAL,
-        help=f'Initial capital (default: {DEFAULT_INITIAL_CAPITAL})'
+        default=None,
+        help=f'Initial capital (default: from preset or {DEFAULT_INITIAL_CAPITAL})'
     )
 
     parser.add_argument(
@@ -383,6 +399,7 @@ Available Strategies:
         local_data_dir=args.data_dir,
         strategy_preset=args.preset,
         monitor_frequency=args.monitor_frequency,
+        finance_preset=args.finance_preset,
     )
 
 
