@@ -19,7 +19,13 @@ v2 改进：
 - 添加止损冷却期，止损后不会立即开仓
 
 v3 改进：
-- 🆕 最后10分钟只允许平仓，禁止开新仓
+- 最后10分钟只允许平仓，禁止开新仓
+
+v4 改进：
+- 🆕 连续亏损冷却期加长
+- 🆕 布林带窄幅时谨慎交易
+- 🆕 防止连续开仓超过 max_allocation
+- 🆕 更完善的状态跟踪
 """
 
 from typing import Dict, Tuple, Optional
@@ -44,10 +50,14 @@ class SimpleUpTrendStrategy:
 
     冷却期机制：
     - 止损后进入冷却期，期间不开新仓
+    - 连续亏损时冷却期加长
     - 冷却期可以按时间或K线数量计算
 
     收盘保护：
-    - 🆕 最后10分钟只允许平仓，不允许开新仓
+    - 最后10分钟只允许平仓，不允许开新仓
+
+    布林带保护：
+    - 布林带过窄时谨慎交易（波动率低，可能即将突破）
     """
 
     def __init__(self,
@@ -75,11 +85,11 @@ class SimpleUpTrendStrategy:
 
                  # ===== 动态仓位管理参数 =====
                  # 止损参数
-                 quick_stop_loss: float = 0.0005,  # 0.05% 快速止损（下降趋势时）
-                 normal_stop_loss: float = 0.001,  # 0.1% 正常止损
+                 quick_stop_loss: float = 0.005,   # 0.5% 快速止损（下降趋势时）
+                 normal_stop_loss: float = 0.01,   # 1% 正常止损
 
                  # 仓位调整参数
-                 reduce_allocation_threshold: float = 0.001,  # 亏损 0.1% 时减仓
+                 reduce_allocation_threshold: float = 0.01,  # 亏损 1% 时减仓
                  reduce_allocation_ratio: float = 0.5,       # 减到原来的 50%
                  recovery_threshold: float = 0.005,          # 盈利 0.5% 开始恢复
                  recovery_step: float = 0.1,                 # 每次恢复 10%
@@ -90,12 +100,22 @@ class SimpleUpTrendStrategy:
                  cooldown_bars: int = 5,                     # 止损后冷却 5 根K线
                  cooldown_minutes: int = 0,                  # 或者冷却 N 分钟（0表示用K线数）
 
-                 # ===== 🆕 收盘保护参数 =====
+                 # 🆕 连续亏损冷却期加长参数
+                 consecutive_loss_multiplier: float = 1.5,   # 每次连续亏损，冷却期乘以这个系数
+                 max_cooldown_multiplier: float = 4.0,       # 最大冷却期倍数
+                 consecutive_loss_reset_after_profit: bool = True,  # 盈利后重置连续亏损计数
+
+                 # ===== 收盘保护参数 =====
                  no_new_position_minutes: int = 10,          # 收盘前N分钟禁止开新仓
                  market_close_time: time = time(16, 0),      # 美股收盘时间 (ET)
 
+                 # ===== 🆕 布林带保护参数 =====
+                 bb_narrow_threshold: float = 0.01,          # BB宽度 < 价格的1% 视为过窄
+                 bb_narrow_action: str = 'WARN',             # 'WARN' 降低信心, 'BLOCK' 禁止交易
+
                  # 其他
-                 max_history_bars: int = 500):
+                 max_history_bars: int = 500,
+                 verbose_init: bool = True):                 # 是否打印初始化信息
 
         # 保存参数
         self.bb_period = bb_period
@@ -127,9 +147,18 @@ class SimpleUpTrendStrategy:
         self.cooldown_bars = cooldown_bars
         self.cooldown_minutes = cooldown_minutes
 
-        # 🆕 收盘保护参数
+        # 🆕 连续亏损参数
+        self.consecutive_loss_multiplier = consecutive_loss_multiplier
+        self.max_cooldown_multiplier = max_cooldown_multiplier
+        self.consecutive_loss_reset_after_profit = consecutive_loss_reset_after_profit
+
+        # 收盘保护参数
         self.no_new_position_minutes = no_new_position_minutes
         self.market_close_time = market_close_time
+
+        # 🆕 布林带保护参数
+        self.bb_narrow_threshold = bb_narrow_threshold
+        self.bb_narrow_action = bb_narrow_action
 
         self.max_history_bars = max_history_bars
 
@@ -139,80 +168,158 @@ class SimpleUpTrendStrategy:
         # ===== 动态仓位状态 =====
         self._current_allocation: Dict[str, float] = {}  # 当前仓位比例
         self._peak_equity: Dict[str, float] = {}         # 最高权益（用于计算回撤）
-        # 上次盈亏状态 ('profit', 'loss', 'neutral')
-        self._last_pnl_state: Dict[str, str] = {}
+        self._last_pnl_state: Dict[str, str] = {}        # 上次盈亏状态
 
         # ===== 冷却期状态 =====
         self._stop_loss_time: Dict[str, datetime] = {}   # 止损时间
         self._stop_loss_bar_count: Dict[str, int] = {}   # 止损时的K线计数
         self._bar_count: Dict[str, int] = {}             # 当前K线计数
 
+        # 🆕 连续亏损状态
+        self._consecutive_losses: Dict[str, int] = {}    # 连续亏损次数
+        self._current_cooldown_multiplier: Dict[str, float] = {}  # 当前冷却期倍数
+
+        # 🆕 交易状态跟踪（防止连续开仓）
+        self._last_signal: Dict[str, str] = {}           # 上次信号
+        self._total_invested: Dict[str, float] = {}      # 当前总投资比例
+
         # 打印配置
+        if verbose_init:
+            self._print_config()
+
+    def _print_config(self):
+        """打印策略配置"""
         print(f"\n{'='*60}")
-        print(f"📈 简单趋势策略 (只做多 + 动态仓位管理 + 冷却期)")
+        print(f"📈 简单趋势策略 v4 (只做多 + 动态仓位管理 + 冷却期)")
         print(f"{'='*60}")
         print(f"趋势判断:")
-        print(f"  ADX > {adx_trend_threshold} = 趋势市")
-        print(f"  ADX < {adx_range_threshold} = 震荡市")
+        print(f"  ADX > {self.adx_trend_threshold} = 趋势市")
+        print(f"  ADX < {self.adx_range_threshold} = 震荡市")
         print(f"\n交易参数:")
         print(
-            f"  上升趋势买入: BB {uptrend_buy_low*100:.0f}%-{uptrend_buy_high*100:.0f}%")
-        print(f"  震荡买入: BB < {range_buy_threshold*100:.0f}%")
+            f"  上升趋势买入: BB {self.uptrend_buy_low*100:.0f}%-{self.uptrend_buy_high*100:.0f}%")
+        print(f"  震荡买入: BB < {self.range_buy_threshold*100:.0f}%")
         print(f"\n动态仓位管理:")
-        print(f"  🛑 快速止损: {quick_stop_loss*100:.1f}% (下降趋势)")
-        print(f"  🛑 正常止损: {normal_stop_loss*100:.1f}%")
-        print(f"  📉 减仓触发: 亏损 > {reduce_allocation_threshold*100:.1f}%")
-        print(f"  📉 减仓比例: 减到 {reduce_allocation_ratio*100:.0f}%")
-        print(f"  📈 恢复触发: 盈利 > {recovery_threshold*100:.1f}%")
-        print(f"  📈 恢复步长: 每次 +{recovery_step*100:.0f}%")
+        print(f"  🛑 快速止损: {self.quick_stop_loss*100:.1f}% (下降趋势)")
+        print(f"  🛑 正常止损: {self.normal_stop_loss*100:.1f}%")
+        print(f"  📉 减仓触发: 亏损 > {self.reduce_allocation_threshold*100:.1f}%")
+        print(f"  📉 减仓比例: 减到 {self.reduce_allocation_ratio*100:.0f}%")
+        print(f"  📈 恢复触发: 盈利 > {self.recovery_threshold*100:.1f}%")
+        print(f"  📈 恢复步长: 每次 +{self.recovery_step*100:.0f}%")
         print(
-            f"  📊 仓位范围: {min_allocation*100:.0f}% - {max_allocation*100:.0f}%")
+            f"  📊 仓位范围: {self.min_allocation*100:.0f}% - {self.max_allocation*100:.0f}%")
         print(f"\n⏳ 冷却期:")
-        if cooldown_minutes > 0:
-            print(f"  止损后冷却: {cooldown_minutes} 分钟")
+        if self.cooldown_minutes > 0:
+            print(f"  止损后冷却: {self.cooldown_minutes} 分钟")
         else:
-            print(f"  止损后冷却: {cooldown_bars} 根K线")
+            print(f"  止损后冷却: {self.cooldown_bars} 根K线")
+        print(f"  🆕 连续亏损冷却期倍数: {self.consecutive_loss_multiplier}x")
+        print(f"  🆕 最大冷却期倍数: {self.max_cooldown_multiplier}x")
         print(f"\n⏰ 收盘保护:")
-        print(f"  收盘前 {no_new_position_minutes} 分钟禁止开新仓")
-        print(f"  收盘时间: {market_close_time.strftime('%H:%M')} ET")
+        print(f"  收盘前 {self.no_new_position_minutes} 分钟禁止开新仓")
+        print(f"  收盘时间: {self.market_close_time.strftime('%H:%M')} ET")
+        print(f"\n📊 布林带保护:")
+        print(f"  窄幅阈值: {self.bb_narrow_threshold*100:.1f}%")
+        print(f"  窄幅处理: {self.bb_narrow_action}")
         print(f"{'='*60}\n")
 
-    # ==================== 🆕 收盘保护方法 ====================
+    # ==================== 收盘保护方法 ====================
 
-    def _is_last_10_minutes(self, current_time) -> bool:
+    def _is_last_n_minutes(self, current_time, minutes: int = None) -> bool:
         """
         检查是否在收盘前N分钟内
-        
-        Args:
-            current_time: 当前时间 (datetime 或 None)
-            
-        Returns:
-            bool: 是否在禁止开新仓的时间段内
         """
+        if minutes is None:
+            minutes = self.no_new_position_minutes
+
         if current_time is None:
             return False
-        
-        # 获取当前时间的 time 部分
+
         if isinstance(current_time, datetime):
             current_time_only = current_time.time()
         elif isinstance(current_time, time):
             current_time_only = current_time
         else:
             return False
-        
-        # 计算禁止开仓的开始时间
+
         close_minutes = self.market_close_time.hour * 60 + self.market_close_time.minute
-        cutoff_minutes = close_minutes - self.no_new_position_minutes
+        cutoff_minutes = close_minutes - minutes
+
+        if cutoff_minutes < 0:
+            cutoff_minutes = 0
+
         cutoff_hour = cutoff_minutes // 60
         cutoff_minute = cutoff_minutes % 60
         cutoff_time = time(cutoff_hour, cutoff_minute)
-        
-        # 检查当前时间是否在 [cutoff_time, market_close_time) 区间内
+
         return cutoff_time <= current_time_only < self.market_close_time
+
+    # ==================== 🆕 布林带保护方法 ====================
+
+    def _calculate_bb_width(self, bb_upper: float, bb_lower: float, price: float) -> float:
+        """
+        计算布林带宽度占价格的百分比
+        """
+        if price <= 0:
+            return 0.0
+        return (bb_upper - bb_lower) / price
+
+    def _is_bb_narrow(self, bb_upper: float, bb_lower: float, price: float) -> Tuple[bool, float]:
+        """
+        检查布林带是否过窄
+
+        Returns:
+            (is_narrow, width_pct): 是否过窄，宽度百分比
+        """
+        width_pct = self._calculate_bb_width(bb_upper, bb_lower, price)
+        return width_pct < self.bb_narrow_threshold, width_pct
+
+    # ==================== 🆕 连续亏损管理方法 ====================
+
+    def _record_loss(self, ticker: str):
+        """记录一次亏损"""
+        self._consecutive_losses[ticker] = self._consecutive_losses.get(
+            ticker, 0) + 1
+
+        # 计算新的冷却期倍数
+        losses = self._consecutive_losses[ticker]
+        new_multiplier = min(
+            self.consecutive_loss_multiplier ** (losses - 1),
+            self.max_cooldown_multiplier
+        )
+        self._current_cooldown_multiplier[ticker] = new_multiplier
+
+        return losses, new_multiplier
+
+    def _record_profit(self, ticker: str):
+        """记录一次盈利，可选择重置连续亏损计数"""
+        if self.consecutive_loss_reset_after_profit:
+            self._consecutive_losses[ticker] = 0
+            self._current_cooldown_multiplier[ticker] = 1.0
+
+    def _get_effective_cooldown(self, ticker: str) -> Tuple[int, int]:
+        """
+        获取有效冷却期（考虑连续亏损）
+
+        Returns:
+            (effective_bars, effective_minutes): 有效的K线数和分钟数
+        """
+        multiplier = self._current_cooldown_multiplier.get(ticker, 1.0)
+        effective_bars = int(self.cooldown_bars * multiplier)
+        effective_minutes = int(self.cooldown_minutes * multiplier)
+        return effective_bars, effective_minutes
+
+    def get_consecutive_losses(self, ticker: str) -> int:
+        """获取连续亏损次数"""
+        return self._consecutive_losses.get(ticker, 0)
+
+    def get_cooldown_multiplier(self, ticker: str) -> float:
+        """获取当前冷却期倍数"""
+        return self._current_cooldown_multiplier.get(ticker, 1.0)
 
     # ==================== 冷却期管理方法 ====================
 
-    def _start_cooldown(self, ticker: str, current_time: datetime = None):
+    def _start_cooldown(self, ticker: str, current_time: datetime = None, is_stop_loss: bool = True):
         """开始冷却期"""
         if current_time is None:
             current_time = datetime.now()
@@ -220,17 +327,27 @@ class SimpleUpTrendStrategy:
         self._stop_loss_time[ticker] = current_time
         self._stop_loss_bar_count[ticker] = self._bar_count.get(ticker, 0)
 
-        if self.cooldown_minutes > 0:
-            print(f"   ⏳ [冷却期开始] {ticker}: 等待 {self.cooldown_minutes} 分钟")
+        # 🆕 如果是止损，记录亏损并可能加长冷却期
+        if is_stop_loss:
+            losses, multiplier = self._record_loss(ticker)
+            effective_bars, effective_minutes = self._get_effective_cooldown(
+                ticker)
+
+            if self.cooldown_minutes > 0:
+                print(f"   ⏳ [冷却期开始] {ticker}: 等待 {effective_minutes} 分钟 "
+                      f"(连续亏损{losses}次, {multiplier:.1f}x)")
+            else:
+                print(f"   ⏳ [冷却期开始] {ticker}: 等待 {effective_bars} 根K线 "
+                      f"(连续亏损{losses}次, {multiplier:.1f}x)")
         else:
-            print(f"   ⏳ [冷却期开始] {ticker}: 等待 {self.cooldown_bars} 根K线")
+            if self.cooldown_minutes > 0:
+                print(f"   ⏳ [冷却期开始] {ticker}: 等待 {self.cooldown_minutes} 分钟")
+            else:
+                print(f"   ⏳ [冷却期开始] {ticker}: 等待 {self.cooldown_bars} 根K线")
 
     def _is_in_cooldown(self, ticker: str, current_time: datetime = None) -> Tuple[bool, str]:
         """
-        检查是否在冷却期内
-
-        Returns:
-            (is_cooling, reason): 是否在冷却期，原因说明
+        检查是否在冷却期内（考虑连续亏损加长）
         """
         if ticker not in self._stop_loss_time:
             return False, ""
@@ -238,17 +355,21 @@ class SimpleUpTrendStrategy:
         if current_time is None:
             current_time = datetime.now()
 
+        # 🆕 获取有效冷却期
+        effective_bars, effective_minutes = self._get_effective_cooldown(
+            ticker)
+
         # 按时间计算冷却期
         if self.cooldown_minutes > 0:
             time_since_stop = current_time - self._stop_loss_time[ticker]
-            cooldown_duration = timedelta(minutes=self.cooldown_minutes)
+            cooldown_duration = timedelta(minutes=effective_minutes)
 
             if time_since_stop < cooldown_duration:
                 remaining = cooldown_duration - time_since_stop
                 remaining_mins = remaining.total_seconds() / 60
-                return True, f"⏳ 冷却期中，还需 {remaining_mins:.1f} 分钟"
+                multiplier = self._current_cooldown_multiplier.get(ticker, 1.0)
+                return True, f"⏳ 冷却期中，还需 {remaining_mins:.1f} 分钟 ({multiplier:.1f}x)"
             else:
-                # 冷却期结束
                 del self._stop_loss_time[ticker]
                 if ticker in self._stop_loss_bar_count:
                     del self._stop_loss_bar_count[ticker]
@@ -260,11 +381,11 @@ class SimpleUpTrendStrategy:
             stop_bar = self._stop_loss_bar_count.get(ticker, 0)
             bars_passed = current_bar - stop_bar
 
-            if bars_passed < self.cooldown_bars:
-                remaining = self.cooldown_bars - bars_passed
-                return True, f"⏳ 冷却期中，还需 {remaining} 根K线"
+            if bars_passed < effective_bars:
+                remaining = effective_bars - bars_passed
+                multiplier = self._current_cooldown_multiplier.get(ticker, 1.0)
+                return True, f"⏳ 冷却期中，还需 {remaining} 根K线 ({multiplier:.1f}x)"
             else:
-                # 冷却期结束
                 if ticker in self._stop_loss_time:
                     del self._stop_loss_time[ticker]
                 if ticker in self._stop_loss_bar_count:
@@ -272,12 +393,11 @@ class SimpleUpTrendStrategy:
                 return False, ""
 
     def _clear_cooldown(self, ticker: str):
-        """清除冷却期状态（用于特殊情况）"""
+        """清除冷却期状态"""
         if ticker in self._stop_loss_time:
             del self._stop_loss_time[ticker]
         if ticker in self._stop_loss_bar_count:
             del self._stop_loss_bar_count[ticker]
-        print(f"   🔄 [冷却期清除] {ticker}")
 
     # ==================== 仓位管理方法 ====================
 
@@ -312,17 +432,9 @@ class SimpleUpTrendStrategy:
     def _reset_allocation(self, ticker: str):
         """重置仓位到最大"""
         self._current_allocation[ticker] = self.max_allocation
-        print(f"   🔄 [重置仓位] {ticker}: 恢复到 {self.max_allocation*100:.0f}%")
 
     def _update_allocation_based_on_pnl(self, ticker: str, pnl_pct: float, market_state: str):
-        """
-        根据盈亏情况动态调整仓位
-
-        Args:
-            ticker: 股票代码
-            pnl_pct: 当前持仓盈亏百分比
-            market_state: 市场状态
-        """
+        """根据盈亏情况动态调整仓位"""
         current_state = 'neutral'
 
         if pnl_pct <= -self.reduce_allocation_threshold:
@@ -332,21 +444,52 @@ class SimpleUpTrendStrategy:
 
         last_state = self._last_pnl_state.get(ticker, 'neutral')
 
-        # 状态变化时调整仓位
         if current_state == 'loss' and last_state != 'loss':
-            # 进入亏损状态 → 减仓
             self._reduce_allocation(ticker, f"亏损 {pnl_pct*100:.2f}%")
 
         elif current_state == 'profit' and last_state == 'loss':
-            # 从亏损恢复到盈利 → 逐步恢复仓位
             self._recover_allocation(ticker)
 
         elif current_state == 'profit' and pnl_pct >= self.uptrend_take_profit:
-            # 盈利超过止盈目标 → 完全恢复仓位
             if self.get_current_allocation(ticker) < self.max_allocation:
                 self._reset_allocation(ticker)
 
         self._last_pnl_state[ticker] = current_state
+
+    # ==================== 🆕 防止连续开仓方法 ====================
+
+    def _can_open_position(self, ticker: str, requested_allocation: float) -> Tuple[bool, str]:
+        """
+        检查是否可以开仓（防止超过 max_allocation）
+
+        Args:
+            ticker: 股票代码
+            requested_allocation: 请求的仓位比例
+
+        Returns:
+            (can_open, reason): 是否可以开仓，原因
+        """
+        current_invested = self._total_invested.get(ticker, 0.0)
+
+        if current_invested >= self.max_allocation:
+            return False, f"🚫 已达最大仓位 {self.max_allocation*100:.0f}%"
+
+        # 检查加上请求的仓位后是否超过最大值
+        if current_invested + requested_allocation > self.max_allocation:
+            available = self.max_allocation - current_invested
+            return True, f"⚠️ 只能再投入 {available*100:.0f}%"
+
+        return True, ""
+
+    def _update_invested(self, ticker: str, delta: float):
+        """更新已投资比例"""
+        current = self._total_invested.get(ticker, 0.0)
+        self._total_invested[ticker] = max(
+            0.0, min(current + delta, self.max_allocation))
+
+    def _reset_invested(self, ticker: str):
+        """重置已投资比例（平仓后）"""
+        self._total_invested[ticker] = 0.0
 
     # ==================== 技术指标计算 ====================
 
@@ -424,9 +567,7 @@ class SimpleUpTrendStrategy:
                    is_market_close: bool = False,
                    current_time_et=None,
                    **kwargs) -> Tuple[Dict, pd.DataFrame]:
-        """
-        获取交易信号
-        """
+        """获取交易信号"""
 
         # ========== 1. 更新历史数据 ==========
         if ticker not in self._history_data or self._history_data[ticker].empty:
@@ -437,8 +578,6 @@ class SimpleUpTrendStrategy:
             self._history_data[ticker] = combined.tail(self.max_history_bars)
 
         df = self._history_data[ticker]
-
-        # 更新K线计数
         self._bar_count[ticker] = len(df)
 
         # ========== 2. 计算技术指标 ==========
@@ -475,7 +614,7 @@ class SimpleUpTrendStrategy:
         # 当前仓位比例
         current_allocation = self.get_current_allocation(ticker)
 
-        # 获取当前时间（用于冷却期计算）
+        # 获取当前时间
         if current_time_et is not None:
             current_time = current_time_et
         elif len(df) > 0 and hasattr(df.index[-1], 'to_pydatetime'):
@@ -483,11 +622,14 @@ class SimpleUpTrendStrategy:
         else:
             current_time = datetime.now()
 
+        # 🆕 检查布林带宽度
+        is_bb_narrow, bb_width = self._is_bb_narrow(
+            current_bb_upper, current_bb_lower, current_price)
+
         # ========== 3. 计算盈亏 ==========
         pnl_pct = 0.0
         if current_position > 0 and avg_cost > 0:
             pnl_pct = (current_price - avg_cost) / avg_cost
-            # 动态调整仓位
             self._update_allocation_based_on_pnl(ticker, pnl_pct, market_state)
 
         # ========== 4. 生成信号 ==========
@@ -500,21 +642,23 @@ class SimpleUpTrendStrategy:
             signal = 'SELL'
             confidence = 10
             reason = "⏰ 收盘平仓"
+            self._reset_invested(ticker)
             return self._make_result(signal, confidence, reason, current_price,
-                                     market_state, current_adx, bb_position, current_allocation), df
+                                     market_state, current_adx, bb_position,
+                                     current_allocation, bb_width, is_bb_narrow), df
 
-        # --- 🆕 最后10分钟只允许平仓，禁止开新仓 ---
-        is_last_10_min = self._is_last_10_minutes(current_time)
-        if is_last_10_min and current_position == 0:
+        # --- 最后N分钟只允许平仓 ---
+        is_last_n_min = self._is_last_n_minutes(current_time)
+        if is_last_n_min and current_position == 0:
             reason = f"⏰ 收盘前{self.no_new_position_minutes}分钟，不开新仓"
             if verbose:
                 print(f"   {reason}")
             return self._make_result('HOLD', 5, reason, current_price,
-                                     market_state, current_adx, bb_position, current_allocation), df
+                                     market_state, current_adx, bb_position,
+                                     current_allocation, bb_width, is_bb_narrow), df
 
-        # --- 止损检查（根据市场状态使用不同阈值）---
+        # --- 止损检查 ---
         if current_position > 0 and avg_cost > 0:
-            # 下降趋势使用快速止损
             stop_loss = self.quick_stop_loss if market_state == 'DOWNTREND' else self.normal_stop_loss
 
             if pnl_pct <= -stop_loss:
@@ -522,20 +666,18 @@ class SimpleUpTrendStrategy:
                 confidence = 10
                 reason = f"🛑 止损! 亏损 {pnl_pct*100:.2f}% (阈值: {stop_loss*100:.1f}%)"
 
-                # 止损后减仓
                 self._reduce_allocation(ticker, "止损触发")
-
-                # 🆕 开始冷却期
-                self._start_cooldown(ticker, current_time)
+                self._start_cooldown(ticker, current_time, is_stop_loss=True)
+                self._reset_invested(ticker)
 
                 if verbose:
                     print(f"🛑 [止损] {ticker}: {reason}")
 
                 return self._make_result(signal, confidence, reason, current_price,
                                          market_state, current_adx, bb_position,
-                                         self.get_current_allocation(ticker)), df
+                                         self.get_current_allocation(ticker), bb_width, is_bb_narrow), df
 
-        # --- 🆕 检查冷却期（只在空仓时检查）---
+        # --- 检查冷却期（只在空仓时）---
         if current_position == 0:
             is_cooling, cooldown_reason = self._is_in_cooldown(
                 ticker, current_time)
@@ -543,10 +685,20 @@ class SimpleUpTrendStrategy:
                 if verbose:
                     print(f"   {cooldown_reason}")
                 return self._make_result('HOLD', 5, cooldown_reason, current_price,
-                                         market_state, current_adx, bb_position, current_allocation), df
+                                         market_state, current_adx, bb_position,
+                                         current_allocation, bb_width, is_bb_narrow), df
+
+        # --- 🆕 检查布林带是否过窄 ---
+        if is_bb_narrow and current_position == 0:
+            if self.bb_narrow_action == 'BLOCK':
+                reason = f"📊 布林带过窄 ({bb_width*100:.2f}%)，暂停交易"
+                if verbose:
+                    print(f"   {reason}")
+                return self._make_result('HOLD', 5, reason, current_price,
+                                         market_state, current_adx, bb_position,
+                                         current_allocation, bb_width, is_bb_narrow), df
 
         # --- 根据市场状态交易 ---
-
         if market_state == 'UPTREND':
             signal, confidence, reason = self._uptrend_strategy(
                 current_position, avg_cost, current_price, bb_position, pnl_pct
@@ -558,13 +710,41 @@ class SimpleUpTrendStrategy:
             )
 
         elif market_state == 'DOWNTREND':
-            # 🔴 下降趋势 - 持仓观望，不急着卖
             signal, confidence, reason = self._downtrend_strategy(
                 current_position, avg_cost, current_price, pnl_pct
             )
 
         else:  # UNCLEAR
             reason = "⚪ 市场不明朗，观望"
+
+        # --- 🆕 布林带窄幅时降低信心 ---
+        if is_bb_narrow and signal == 'BUY' and self.bb_narrow_action == 'WARN':
+            confidence = max(confidence - 2, 1)
+            reason += f" ⚠️BB窄({bb_width*100:.1f}%)"
+
+        # --- 🆕 检查是否可以开仓（防止超过 max_allocation）---
+        if signal == 'BUY':
+            can_open, open_reason = self._can_open_position(
+                ticker, current_allocation)
+            if not can_open:
+                signal = 'HOLD'
+                reason = open_reason
+            elif open_reason:
+                reason += f" {open_reason}"
+
+        # --- 🆕 记录盈利（用于重置连续亏损）---
+        if signal == 'SELL' and current_position > 0 and pnl_pct > 0:
+            self._record_profit(ticker)
+            self._reset_invested(ticker)
+
+        # --- 🆕 更新已投资比例 ---
+        if signal == 'BUY':
+            self._update_invested(ticker, current_allocation)
+        elif signal == 'SELL':
+            self._reset_invested(ticker)
+
+        # --- 🆕 记录上次信号 ---
+        self._last_signal[ticker] = signal
 
         # ========== 5. 输出调试信息 ==========
         if verbose:
@@ -574,26 +754,28 @@ class SimpleUpTrendStrategy:
 
             pos_str = f"持仓 {int(current_position)} 股" if current_position > 0 else "空仓"
             pnl_str = f" ({pnl_pct*100:+.2f}%)" if current_position > 0 else ""
+            time_warning = f" ⚠️收盘前{self.no_new_position_minutes}分钟" if is_last_n_min else ""
+            bb_warning = f" 📊BB窄" if is_bb_narrow else ""
 
-            # 🆕 显示是否在最后10分钟
-            time_warning = " ⚠️收盘前10分钟" if is_last_10_min else ""
-
-            print(
-                f"\n{state_emoji.get(market_state, '⚪')} [{market_state}] {ticker} | {pos_str}{pnl_str}{time_warning}")
-            print(
-                f"   价格: ${current_price:.2f} | BB: {bb_position*100:.0f}% | ADX: {current_adx:.1f}")
-            print(f"   📊 当前仓位比例: {current_allocation*100:.0f}%")
+            print(f"\n{state_emoji.get(market_state, '⚪')} [{market_state}] {ticker} | "
+                  f"{pos_str}{pnl_str}{time_warning}{bb_warning}")
+            print(f"   价格: ${current_price:.2f} | BB: {bb_position*100:.0f}% | "
+                  f"BB宽: {bb_width*100:.2f}% | ADX: {current_adx:.1f}")
+            print(f"   📊 当前仓位比例: {current_allocation*100:.0f}% | "
+                  f"已投资: {self._total_invested.get(ticker, 0)*100:.0f}%")
+            print(f"   🔄 连续亏损: {self._consecutive_losses.get(ticker, 0)}次 | "
+                  f"冷却倍数: {self._current_cooldown_multiplier.get(ticker, 1.0):.1f}x")
             print(f"   {signal_emoji.get(signal, '❓')} {signal} - {reason}")
 
         return self._make_result(signal, confidence, reason, current_price,
-                                 market_state, current_adx, bb_position, current_allocation), df
+                                 market_state, current_adx, bb_position,
+                                 current_allocation, bb_width, is_bb_narrow), df
 
     # ==================== 各市场状态策略 ====================
 
     def _uptrend_strategy(self, position: float, avg_cost: float,
                           price: float, bb_pos: float, pnl_pct: float) -> Tuple[str, int, str]:
         """上升趋势策略"""
-
         if position == 0:
             if self.uptrend_buy_low <= bb_pos <= self.uptrend_buy_high:
                 return 'BUY', 8, f"🟢 上升趋势回调买入 (BB {bb_pos*100:.0f}%)"
@@ -609,7 +791,6 @@ class SimpleUpTrendStrategy:
     def _ranging_strategy(self, position: float, price: float,
                           bb_pos: float) -> Tuple[str, int, str]:
         """震荡市策略"""
-
         if position == 0:
             if bb_pos <= self.range_buy_threshold:
                 return 'BUY', 7, f"🟡 震荡低点买入 (BB {bb_pos*100:.0f}%)"
@@ -623,35 +804,21 @@ class SimpleUpTrendStrategy:
 
     def _downtrend_strategy(self, position: float, avg_cost: float,
                             price: float, pnl_pct: float) -> Tuple[str, int, str]:
-        """
-        下降趋势策略 - 持仓观望，不急着卖
-
-        - 不开新仓
-        - 有仓位时观望，除非触发止损
-        - 如果有盈利且盈利开始缩小，可以考虑保住利润
-        """
-
+        """下降趋势策略"""
         if position == 0:
-            # 没有仓位 - 不开新仓
             return 'HOLD', 5, "📉 下降趋势，不开新仓"
-
         else:
-            # 有仓位 - 观望，让止损逻辑处理
             if pnl_pct > self.uptrend_take_profit:
-                # 盈利超过目标，可以卖
                 return 'SELL', 7, f"📉 下降趋势，锁定利润 (+{pnl_pct*100:.1f}%)"
-
             elif pnl_pct > 0:
-                # 小盈利，继续观望
                 return 'HOLD', 5, f"📉 下降趋势，小盈利观望 (+{pnl_pct*100:.1f}%)"
-
             else:
-                # 亏损中，等待止损触发或市场转好
                 return 'HOLD', 5, f"📉 下降趋势，持仓观望 ({pnl_pct*100:.1f}%)"
 
     def _make_result(self, signal: str, confidence: int, reason: str,
                      price: float, market_state: str, adx: float,
-                     bb_position: float, allocation: float = 1.0) -> Dict:
+                     bb_position: float, allocation: float = 1.0,
+                     bb_width: float = 0.0, is_bb_narrow: bool = False) -> Dict:
         """构建返回结果"""
         return {
             'signal': signal,
@@ -661,7 +828,9 @@ class SimpleUpTrendStrategy:
             'market_state': market_state,
             'adx': adx,
             'bb_position': bb_position,
-            'allocation': allocation  # 新增：当前建议仓位比例
+            'allocation': allocation,
+            'bb_width': bb_width,
+            'is_bb_narrow': is_bb_narrow,
         }
 
     def get_history_data(self, ticker: str) -> pd.DataFrame:
@@ -692,63 +861,28 @@ class SimpleUpTrendStrategy:
 
         return df
 
+    # ==================== 状态重置方法（用于测试）====================
 
-# ==================== 测试 ====================
-if __name__ == '__main__':
-
-    strategy = SimpleUpTrendStrategy(
-        quick_stop_loss=0.005,      # 0.5% 快速止损
-        normal_stop_loss=0.02,      # 2% 正常止损
-        reduce_allocation_threshold=0.01,  # 1% 时减仓
-        cooldown_bars=5,            # 止损后冷却 5 根K线
-        no_new_position_minutes=10, # 收盘前10分钟不开新仓
-    )
-
-    # 模拟测试
-    print("\n" + "="*50)
-    print("测试动态仓位管理 + 冷却期 + 收盘保护")
-    print("="*50)
-
-    ticker = 'TEST'
-
-    # 模拟亏损 -> 减仓
-    print("\n1. 模拟亏损触发减仓:")
-    strategy._update_allocation_based_on_pnl(ticker, -0.015, 'DOWNTREND')
-    print(f"   当前仓位: {strategy.get_current_allocation(ticker)*100:.0f}%")
-
-    # 模拟止损触发冷却期
-    print("\n2. 模拟止损触发冷却期:")
-    strategy._bar_count[ticker] = 100
-    strategy._start_cooldown(ticker, datetime.now())
-
-    # 检查冷却期
-    print("\n3. 检查冷却期状态:")
-    strategy._bar_count[ticker] = 102  # 只过了2根K线
-    is_cooling, reason = strategy._is_in_cooldown(ticker)
-    print(f"   冷却中: {is_cooling}, 原因: {reason}")
-
-    # 冷却期结束
-    print("\n4. 冷却期结束:")
-    strategy._bar_count[ticker] = 106  # 过了6根K线，超过5根的冷却期
-    is_cooling, reason = strategy._is_in_cooldown(ticker)
-    print(f"   冷却中: {is_cooling}")
-
-    # 模拟盈利恢复
-    print("\n5. 模拟盈利恢复仓位:")
-    strategy._update_allocation_based_on_pnl(ticker, 0.01, 'UPTREND')
-    print(f"   当前仓位: {strategy.get_current_allocation(ticker)*100:.0f}%")
-
-    # 🆕 测试收盘前10分钟检查
-    print("\n6. 测试收盘保护:")
-    test_times = [
-        time(15, 45),  # 15:45 - 不在保护期
-        time(15, 50),  # 15:50 - 进入保护期
-        time(15, 55),  # 15:55 - 在保护期内
-        time(15, 59),  # 15:59 - 在保护期内
-        time(16, 0),   # 16:00 - 收盘
-    ]
-    for t in test_times:
-        dt = datetime.combine(datetime.today(), t)
-        is_protected = strategy._is_last_10_minutes(dt)
-        status = "🚫 禁止开仓" if is_protected else "✅ 可以开仓"
-        print(f"   {t.strftime('%H:%M')} - {status}")
+    def reset_state(self, ticker: str = None):
+        """重置策略状态（用于测试）"""
+        if ticker:
+            # 重置特定 ticker
+            for d in [self._history_data, self._current_allocation, self._peak_equity,
+                      self._last_pnl_state, self._stop_loss_time, self._stop_loss_bar_count,
+                      self._bar_count, self._consecutive_losses, self._current_cooldown_multiplier,
+                      self._last_signal, self._total_invested]:
+                if ticker in d:
+                    del d[ticker]
+        else:
+            # 重置所有
+            self._history_data.clear()
+            self._current_allocation.clear()
+            self._peak_equity.clear()
+            self._last_pnl_state.clear()
+            self._stop_loss_time.clear()
+            self._stop_loss_bar_count.clear()
+            self._bar_count.clear()
+            self._consecutive_losses.clear()
+            self._current_cooldown_multiplier.clear()
+            self._last_signal.clear()
+            self._total_invested.clear()
