@@ -115,7 +115,7 @@ class SimpleUpTrendStrategy:
 
                  # ===== 🆕 布林带保护参数 =====
                  bb_narrow_threshold: float = 0.02,          # BB宽度 < 价格的1% 视为过窄
-                 bb_narrow_action: str = 'WARN',             # 'WARN' 降低信心, 'BLOCK' 禁止交易
+                 bb_narrow_action: str = 'BLOCK',             # 'WARN' 降低信心, 'BLOCK' 禁止交易
 
                  # 其他
                  max_history_bars: int = 500,
