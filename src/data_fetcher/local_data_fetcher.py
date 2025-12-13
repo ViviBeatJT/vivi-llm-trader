@@ -63,6 +63,7 @@ class LocalDataFetcher(BaseDataFetcher):
         
         # Data storage - loaded once
         self._data: Optional[pd.DataFrame] = None
+        self._latest_data: Optional[pd.DataFrame] = None
         
         if verbose:
             print(f"📁 LocalDataFetcher initialized:")
@@ -248,6 +249,7 @@ class LocalDataFetcher(BaseDataFetcher):
         output_cols = ['open', 'high', 'low', 'close', 'volume']
         available_cols = [c for c in output_cols if c in filtered_df.columns]
         filtered_df = filtered_df[available_cols]
+        self._latest_data = filtered_df
         
         return filtered_df
     
@@ -264,10 +266,10 @@ class LocalDataFetcher(BaseDataFetcher):
         if ticker and ticker != self.ticker:
             self._load_data(ticker)
         
-        if self._data is None or self._data.empty:
+        if self._latest_data is None or self._latest_data.empty:
             return 0.0
         
-        return float(self._data['close'].iloc[-1])
+        return float(self._latest_data['close'].iloc[-1])
     
     def get_available_tickers(self) -> List[str]:
         """

@@ -103,7 +103,7 @@ class SimpleUpTrendStrategy:
                  max_allocation: float = 1.0,                # 最大仓位 100%
 
                  # ===== 冷却期参数 =====
-                 cooldown_bars: int = 5,                     # 止损后冷却 5 根K线
+                 cooldown_bars: int = 0,                     # 止损后冷却 5 根K线
                  cooldown_minutes: int = 0,                  # 或者冷却 N 分钟（0表示用K线数）
 
                  # 🆕 连续亏损冷却期加长参数

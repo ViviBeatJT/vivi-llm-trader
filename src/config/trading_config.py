@@ -144,7 +144,7 @@ DEFAULT_DATA_CONFIG = DataConfig()
 
 # 预设配置
 DATA_PRESETS = {
-    'fast': DataConfig(timeframe_value=1, lookback_minutes=60, step_seconds=30),
+    'fast': DataConfig(timeframe_value=1, lookback_minutes=60, step_seconds=60),
     'medium': DataConfig(timeframe_value=5, lookback_minutes=300, step_seconds=30),
     'slow': DataConfig(timeframe_value=15, lookback_minutes=1000, step_seconds=60),
 }
@@ -207,8 +207,8 @@ class SimpleUpTrendConfig:
     # ---------- 其他 ----------
     max_history_bars: int = 500
     
-    # cooldown_bars: int = 5                    # 止损后冷却 5 根K线
-    cooldown_minutes: int = 1       
+    cooldown_bars: int = 0                   # 止损后冷却 5 根K线
+    cooldown_minutes: int = 0       
     
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典"""
