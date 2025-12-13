@@ -18,7 +18,7 @@ Usage:
     python -m src.runner.bulk_backtest_runner --strategy moderate --ticker TSLA --start 2024-12-01 --end 2024-12-31
     
     # With local data
-    python -m src.runner.bulk_backtest_runner --strategy up_trend_aware --ticker SPLV --start 2024-12-01 --end 2024-12-31 --local-data --data-dir "/Users/vivi/vivi-llm-trader/data/"
+    python -m src.runner.bulk_backtest_runner --strategy up_trend_aware --ticker SPLV --start 2024-12-01 --end 2024-12-31 --finance-preset small --monitor_frequency fast --local-data --data-dir "/Users/vivi/vivi-llm-trader/data/"
     
     # Multiple strategies comparison
     python -m src.runner.bulk_backtest_runner --strategies moderate,up_trend_aware,mean_reversion --ticker TSLA --start 2024-12-01 --end 2024-12-31
@@ -93,7 +93,9 @@ def run_single_day_with_logging(
     log_dir: Optional[str] = None,
     verbose: bool = False,
     use_local_data: bool = False,
-    local_data_dir: str = "data/"
+    local_data_dir: str = "data/",
+    strategy_preset: str = None,
+    monitor_frequency: str = None,
 ) -> Optional[Dict]:
     """
     Run backtest for a single day with optional log file output.
@@ -111,6 +113,8 @@ def run_single_day_with_logging(
         verbose: Print detailed output
         use_local_data: If True, use local CSV files instead of Alpaca API
         local_data_dir: Directory containing CSV files
+        strategy_preset: Strategy preset ('conservative', 'moderate', 'aggressive')
+        monitor_frequency: Data frequency preset ('fast', 'medium', 'slow')
         
     Returns:
         Results dictionary or None on failure
@@ -135,7 +139,9 @@ def run_single_day_with_logging(
                     output_dir=log_dir,
                     verbose=verbose,
                     use_local_data=use_local_data,
-                    local_data_dir=local_data_dir
+                    local_data_dir=local_data_dir,
+                    strategy_preset=strategy_preset,
+                    monitor_frequency=monitor_frequency,
                 )
         else:
             # Run normally
@@ -148,7 +154,9 @@ def run_single_day_with_logging(
                 auto_open_browser=False,
                 verbose=verbose,
                 use_local_data=use_local_data,
-                local_data_dir=local_data_dir
+                local_data_dir=local_data_dir,
+                strategy_preset=strategy_preset,
+                monitor_frequency=monitor_frequency,
             )
         
         if result is None:
@@ -199,7 +207,9 @@ def run_bulk_backtest(
     output_dir: str = 'bulk_backtest_results',
     verbose: bool = False,
     use_local_data: bool = False,
-    local_data_dir: str = "data/"
+    local_data_dir: str = "data/",
+    strategy_preset: str = None,
+    monitor_frequency: str = None,
 ) -> pd.DataFrame:
     """
     Run bulk backtest across multiple dates and strategies.
@@ -218,6 +228,8 @@ def run_bulk_backtest(
         verbose: Print detailed output per day
         use_local_data: If True, use local CSV files instead of Alpaca API
         local_data_dir: Directory containing CSV files
+        strategy_preset: Strategy preset ('conservative', 'moderate', 'aggressive')
+        monitor_frequency: Data frequency preset ('fast', 'medium', 'slow')
         
     Returns:
         DataFrame with all results
@@ -237,6 +249,8 @@ def run_bulk_backtest(
     print(f"   Dates: {start_date} to {end_date}")
     print(f"   Trading Days: {len(dates)}")
     print(f"   Strategies: {', '.join(strategies)}")
+    print(f"   Strategy Preset: {strategy_preset or 'default'}")
+    print(f"   Monitor Frequency: {monitor_frequency or 'default'}")
     print(f"   Consecutive Capital: {'Yes' if consecutive_capital else 'No'}")
     print(f"   Output: {output_dir}")
     print(f"{'='*60}\n")
@@ -273,7 +287,9 @@ def run_bulk_backtest(
                 log_dir=str(log_dir),
                 verbose=verbose,
                 use_local_data=use_local_data,
-                local_data_dir=local_data_dir
+                local_data_dir=local_data_dir,
+                strategy_preset=strategy_preset,
+                monitor_frequency=monitor_frequency,
             )
             
             if result:
@@ -384,7 +400,12 @@ def main():
 Examples:
     python -m src.runner.bulk_backtest_runner --strategy moderate --ticker TSLA --start 2024-12-01 --end 2024-12-31
     python -m src.runner.bulk_backtest_runner --strategies moderate,up_trend_aware --ticker TSLA --start 2024-12-01 --end 2024-12-31
+    python -m src.runner.bulk_backtest_runner --strategy up_trend_aware --preset conservative --monitor-frequency fast
     python -m src.runner.bulk_backtest_runner --strategy moderate --no-consecutive-capital
+
+Presets:
+    Strategy: conservative, moderate, aggressive
+    Monitor Frequency: fast (1min/10s), medium (5min/30s), slow (15min/60s)
 
 Available Strategies:
 """ + "\n".join([f"    {k}: {v}" for k, v in StrategyRegistry.list_strategies().items()])
@@ -423,6 +444,22 @@ Available Strategies:
         type=str,
         default=None,
         help='Comma-separated list of strategies'
+    )
+    
+    parser.add_argument(
+        '--preset', '-p',
+        type=str,
+        default=None,
+        choices=['conservative', 'moderate', 'aggressive'],
+        help='Strategy preset (conservative, moderate, aggressive)'
+    )
+    
+    parser.add_argument(
+        '--monitor-frequency',
+        type=str,
+        default=None,
+        choices=['fast', 'medium', 'slow'],
+        help='Monitor frequency preset (fast: 1min/10s, medium: 5min/30s, slow: 15min/60s)'
     )
     
     parser.add_argument(
@@ -502,7 +539,9 @@ Available Strategies:
         output_dir=args.output_dir,
         verbose=args.verbose,
         use_local_data=args.local_data,
-        local_data_dir=args.data_dir
+        local_data_dir=args.data_dir,
+        strategy_preset=args.preset,
+        monitor_frequency=args.monitor_frequency,
     )
     
     # Generate summaries

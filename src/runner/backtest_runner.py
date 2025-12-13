@@ -12,7 +12,7 @@ It handles:
 
 Usage:
     python -m src.runner.backtest_runner --strategy moderate --ticker TSLA --date 2025-01-01
-    python -m src.runner.backtest_runner --strategy up_trend_aware --ticker SPLV --date 2024-12-06 --local-data --data-dir "/Users/vivi/vivi-llm-trader/data/"
+    python -m src.runner.backtest_runner --strategy up_trend_aware --ticker SPLV --date 2024-12-06 --finance-preset small --monitor_frequency fast --local-data --data-dir "/Users/vivi/vivi-llm-trader/data/"
 """
 
 from datetime import datetime, timezone, timedelta
@@ -58,14 +58,16 @@ def run_backtest(
     strategy_name: str,
     trading_date: str,
     initial_capital: float = DEFAULT_INITIAL_CAPITAL,
-    step_seconds: int = DEFAULT_STEP_SECONDS,
-    lookback_minutes: int = DEFAULT_LOOKBACK_MINUTES,
+    step_seconds: int = None,
+    lookback_minutes: int = None,
     enable_chart: bool = True,
     auto_open_browser: bool = True,
     output_dir: str = "backtest_results",
     verbose: bool = True,
     use_local_data: bool = False,
-    local_data_dir: str = "data/"
+    local_data_dir: str = "data/",
+    strategy_preset: str = None,
+    monitor_frequency: str = None,
 ) -> dict:
     """
     Run a single-day backtest.
@@ -75,14 +77,16 @@ def run_backtest(
         strategy_name: Strategy key from registry
         trading_date: Date string 'YYYY-MM-DD'
         initial_capital: Starting capital
-        step_seconds: Time step in seconds
-        lookback_minutes: Data lookback period
+        step_seconds: Time step in seconds (None uses preset/default)
+        lookback_minutes: Data lookback period (None uses preset/default)
         enable_chart: Whether to generate chart
         auto_open_browser: Auto-open chart in browser
         output_dir: Output directory for results
         verbose: Print detailed output
         use_local_data: If True, use local CSV files instead of Alpaca API
         local_data_dir: Directory containing CSV files (when use_local_data=True)
+        strategy_preset: Strategy preset ('conservative', 'moderate', 'aggressive')
+        monitor_frequency: Data frequency preset ('fast', 'medium', 'slow')
 
     Returns:
         Backtest results dictionary
@@ -103,17 +107,21 @@ def run_backtest(
     # 1. Create TradingConfig
     # ==========================================
 
-    # Create config using the centralized system
+    # Create config using the centralized system with presets
     config = get_full_config(
         initial_capital=initial_capital,
         ticker=ticker,
         strategy=strategy_name,
         mode='simulation',  # Backtest uses simulation mode
+        strategy_preset=strategy_preset,
+        monitor_frequency=monitor_frequency,
     )
 
-    # Override data config parameters
-    config.data.step_seconds = step_seconds
-    config.data.lookback_minutes = lookback_minutes
+    # Override data config parameters if explicitly provided
+    if step_seconds is not None:
+        config.data.step_seconds = step_seconds
+    if lookback_minutes is not None:
+        config.data.lookback_minutes = lookback_minutes
 
     # Override system config parameters
     config.system.enable_chart = enable_chart
@@ -125,10 +133,12 @@ def run_backtest(
     print(f"\n🔧 Configuration:")
     print(f"   Ticker: {ticker}")
     print(f"   Date: {trading_date}")
-    print(f"   Strategy: {strategy_name}")
+    print(f"   Strategy: {strategy_name}" +
+          (f" (preset: {strategy_preset})" if strategy_preset else ""))
     print(f"   Initial Capital: ${initial_capital:,.2f}")
-    print(f"   Step: {step_seconds} seconds")
-    print(f"   Lookback: {lookback_minutes} minutes")
+    print(f"   Monitor Frequency: {monitor_frequency or 'default'}")
+    print(f"   Step: {config.data.step_seconds} seconds")
+    print(f"   Lookback: {config.data.lookback_minutes} minutes")
 
     # ==========================================
     # 2. Create Components
@@ -239,6 +249,11 @@ Examples:
     python -m src.runner.backtest_runner --strategy moderate --ticker TSLA --date 2024-12-05
     python -m src.runner.backtest_runner --strategy up_trend_aware --ticker AAPL --date 2024-12-06 --no-chart
     python -m src.runner.backtest_runner --strategy mean_reversion --capital 5000
+    python -m src.runner.backtest_runner --strategy up_trend_aware --preset conservative --monitor-frequency fast
+
+Presets:
+    Strategy: conservative, moderate, aggressive
+    Monitor Frequency: fast (1min/10s), medium (5min/30s), slow (15min/60s)
 
 Available Strategies:
 """ + "\n".join([f"    {k}: {v}" for k, v in StrategyRegistry.list_strategies().items()])
@@ -260,6 +275,22 @@ Available Strategies:
     )
 
     parser.add_argument(
+        '--preset', '-p',
+        type=str,
+        default=None,
+        choices=['conservative', 'moderate', 'aggressive'],
+        help='Strategy preset (conservative, moderate, aggressive)'
+    )
+
+    parser.add_argument(
+        '--monitor-frequency',
+        type=str,
+        default=None,
+        choices=['fast', 'medium', 'slow'],
+        help='Monitor frequency preset (fast: 1min/10s, medium: 5min/30s, slow: 15min/60s)'
+    )
+
+    parser.add_argument(
         '--date', '-d',
         type=str,
         default=None,
@@ -276,15 +307,15 @@ Available Strategies:
     parser.add_argument(
         '--step',
         type=int,
-        default=DEFAULT_STEP_SECONDS,
-        help=f'Step interval in seconds (default: {DEFAULT_STEP_SECONDS})'
+        default=None,
+        help=f'Step interval in seconds (default: from preset or {DEFAULT_STEP_SECONDS})'
     )
 
     parser.add_argument(
         '--lookback',
         type=int,
-        default=DEFAULT_LOOKBACK_MINUTES,
-        help=f'Data lookback in minutes (default: {DEFAULT_LOOKBACK_MINUTES})'
+        default=None,
+        help=f'Data lookback in minutes (default: from preset or {DEFAULT_LOOKBACK_MINUTES})'
     )
 
     parser.add_argument(
@@ -342,14 +373,16 @@ Available Strategies:
         strategy_name=args.strategy,
         trading_date=args.date,
         initial_capital=args.capital,
-        step_seconds=args.step,
-        lookback_minutes=args.lookback,
+        step_seconds=args.step if args.step else None,
+        lookback_minutes=args.lookback if args.lookback else None,
         enable_chart=not args.no_chart,
         auto_open_browser=not args.no_browser,
         output_dir=args.output_dir,
         verbose=not args.quiet,
         use_local_data=args.local_data,
-        local_data_dir=args.data_dir
+        local_data_dir=args.data_dir,
+        strategy_preset=args.preset,
+        monitor_frequency=args.monitor_frequency,
     )
 
 

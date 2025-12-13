@@ -7,7 +7,7 @@ Live Trading Runner - 使用集中配置系统
 
 使用方式:
     # 命令行
-    python -m src.runner.live_runner --ticker TSLA --mode paper --strategy up_trend_aware
+    python -m src.runner.live_runner --ticker TSLA --mode paper --strategy up_trend_aware --finance-preset small --monitor_frequency fast
     python -m src.runner.live_runner --ticker AAPL --preset conservative --capital 5000
     
     # Python 代码
