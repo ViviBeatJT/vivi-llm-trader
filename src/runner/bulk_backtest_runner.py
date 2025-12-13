@@ -97,6 +97,8 @@ def run_single_day_with_logging(
     strategy_preset: str = None,
     monitor_frequency: str = None,
     finance_preset: str = None,
+    enable_chart: bool = False,
+    chart_dir: Optional[str] = None,
 ) -> Optional[Dict]:
     """
     Run backtest for a single day with optional log file output.
@@ -117,6 +119,8 @@ def run_single_day_with_logging(
         strategy_preset: Strategy preset ('conservative', 'moderate', 'aggressive')
         monitor_frequency: Data frequency preset ('fast', 'medium', 'slow')
         finance_preset: Finance preset ('small', 'medium', 'large', 'paper')
+        enable_chart: If True, generate chart for this day
+        chart_dir: Directory for chart files (uses log_dir if not specified)
 
     Returns:
         Results dictionary or None on failure
@@ -127,6 +131,9 @@ def run_single_day_with_logging(
     if log_dir:
         log_file_path = str(Path(log_dir) / f"{date_str}_{strategy_name}.log")
 
+    # Determine chart output directory
+    actual_chart_dir = chart_dir or log_dir
+
     try:
         if log_file_path:
             # Run with output redirected to log file
@@ -136,9 +143,9 @@ def run_single_day_with_logging(
                     strategy_name=strategy_name,
                     trading_date=date_str,
                     initial_capital=initial_capital,
-                    enable_chart=False,  # No charts for bulk runs
-                    auto_open_browser=False,
-                    output_dir=log_dir,
+                    enable_chart=enable_chart,
+                    auto_open_browser=False,  # Never auto-open in bulk mode
+                    output_dir=actual_chart_dir or "bulk_backtest_results/charts",
                     verbose=verbose,
                     use_local_data=use_local_data,
                     local_data_dir=local_data_dir,
@@ -153,8 +160,9 @@ def run_single_day_with_logging(
                 strategy_name=strategy_name,
                 trading_date=date_str,
                 initial_capital=initial_capital,
-                enable_chart=False,
-                auto_open_browser=False,
+                enable_chart=enable_chart,
+                auto_open_browser=False,  # Never auto-open in bulk mode
+                output_dir=actual_chart_dir or "bulk_backtest_results/charts",
                 verbose=verbose,
                 use_local_data=use_local_data,
                 local_data_dir=local_data_dir,
@@ -216,6 +224,7 @@ def run_bulk_backtest(
     monitor_frequency: str = None,
     finance_preset: str = None,
     initial_capital: float = None,
+    enable_chart: bool = False,
 ) -> pd.DataFrame:
     """
     Run bulk backtest across multiple dates and strategies.
@@ -238,6 +247,7 @@ def run_bulk_backtest(
         monitor_frequency: Data frequency preset ('fast', 'medium', 'slow')
         finance_preset: Finance preset ('small', 'medium', 'large', 'paper')
         initial_capital: Override initial capital (takes precedence over finance_preset)
+        enable_chart: If True, generate charts for each day
 
     Returns:
         DataFrame with all results
@@ -246,6 +256,12 @@ def run_bulk_backtest(
     Path(output_dir).mkdir(parents=True, exist_ok=True)
     log_dir = Path(output_dir) / 'logs'
     log_dir.mkdir(parents=True, exist_ok=True)
+
+    # Create charts directory if enabled
+    chart_dir = None
+    if enable_chart:
+        chart_dir = Path(output_dir) / 'charts'
+        chart_dir.mkdir(parents=True, exist_ok=True)
 
     # Get dates
     dates = get_trading_dates(start_date, end_date, trading_days_only)
@@ -272,6 +288,7 @@ def run_bulk_backtest(
     print(
         f"   Finance: {finance_preset or 'default'} (${starting_capital:,.2f})")
     print(f"   Consecutive Capital: {'Yes' if consecutive_capital else 'No'}")
+    print(f"   Charts: {'Yes' if enable_chart else 'No'}")
     print(f"   Output: {output_dir}")
     print(f"{'='*60}\n")
 
@@ -311,6 +328,8 @@ def run_bulk_backtest(
                 strategy_preset=strategy_preset,
                 monitor_frequency=monitor_frequency,
                 finance_preset=finance_preset if current_capital == starting_capital else None,
+                enable_chart=enable_chart,
+                chart_dir=str(chart_dir) if chart_dir else None,
             )
 
             if result:
@@ -333,6 +352,8 @@ def run_bulk_backtest(
         df.to_csv(f"{output_dir}/daily_results.csv", index=False)
         print(f"\n✅ Daily results saved: {output_dir}/daily_results.csv")
         print(f"✅ Log files saved: {log_dir}/ ({len(all_results)} files)")
+        if enable_chart and chart_dir:
+            print(f"✅ Charts saved: {chart_dir}/ ({len(all_results)} files)")
 
         # Print final summary
         if consecutive_capital:
@@ -427,11 +448,22 @@ Examples:
     python -m src.runner.bulk_backtest_runner --strategies moderate,up_trend_aware --ticker TSLA --start 2024-12-01 --end 2024-12-31
     python -m src.runner.bulk_backtest_runner --strategy up_trend_aware --preset conservative --monitor-frequency fast --finance-preset medium
     python -m src.runner.bulk_backtest_runner --strategy moderate --finance-preset large --no-consecutive-capital
+    python -m src.runner.bulk_backtest_runner --strategy up_trend_aware --ticker AAPL --start 2024-12-01 --end 2024-12-31 --chart
 
 Presets:
     Strategy: conservative, moderate, aggressive
     Monitor Frequency: fast (1min/10s), medium (5min/30s), slow (15min/60s)
     Finance: small ($1k), medium ($5k), large ($25k), paper ($100k)
+
+Output Structure:
+    {output_dir}/
+    ├── daily_results.csv       # Daily PnL summary
+    ├── monthly_summary.csv     # Monthly aggregation
+    ├── strategy_comparison.csv # Strategy performance comparison
+    ├── logs/                   # Daily log files
+    │   └── {date}_{strategy}.log
+    └── charts/                 # Daily charts (with --chart flag)
+        └── {ticker}_{date}_{strategy}.html
 
 Available Strategies:
 """ + "\n".join([f"    {k}: {v}" for k, v in StrategyRegistry.list_strategies().items()])
@@ -501,6 +533,12 @@ Available Strategies:
         type=float,
         default=None,
         help='Initial capital (overrides finance preset)'
+    )
+
+    parser.add_argument(
+        '--no-chart',
+        action='store_true',
+        help='Generate charts for each day (saved to charts/ folder)'
     )
 
     parser.add_argument(
@@ -585,6 +623,7 @@ Available Strategies:
         monitor_frequency=args.monitor_frequency,
         finance_preset=args.finance_preset,
         initial_capital=args.capital,
+        enable_chart=not args.no_chart,
     )
 
     # Generate summaries
