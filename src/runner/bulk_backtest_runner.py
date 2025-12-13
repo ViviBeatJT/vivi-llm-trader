@@ -18,7 +18,7 @@ Usage:
     python -m src.runner.bulk_backtest_runner --strategy moderate --ticker TSLA --start 2024-12-01 --end 2024-12-31
     
     # With local data
-    python -m src.runner.bulk_backtest_runner --strategy up_trend_aware --ticker SPLV --start 2024-12-01 --end 2024-12-31 --finance-preset small --monitor-frequency fast --local-data --data-dir "/Users/vivi/vivi-llm-trader/data/"
+    python -m src.runner.bulk_backtest_runner --strategy up_trend_aware --ticker TSLA --start 2025-01-01 --end 2025-12-01 --finance-preset small --monitor-frequency fast --local-data --data-dir "/Users/vivi/vivi-llm-trader/data/"
     
     # Multiple strategies comparison
     python -m src.runner.bulk_backtest_runner --strategies moderate,up_trend_aware,mean_reversion --ticker TSLA --start 2024-12-01 --end 2024-12-31
