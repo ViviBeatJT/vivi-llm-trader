@@ -82,6 +82,10 @@ class SimpleUpTrendStrategy:
                  # 震荡市交易参数
                  range_buy_threshold: float = 0.20,
                  range_sell_threshold: float = 0.55,
+                 
+                # 下降趋势交易参数
+                 downtrend_buy_threshold : float = 0.05,
+                 downtrend_sell_threshold : float = 0.40,
 
                  # ===== 动态仓位管理参数 =====
                  # 止损参数
@@ -110,7 +114,7 @@ class SimpleUpTrendStrategy:
                  market_close_time: time = time(16, 0),      # 美股收盘时间 (ET)
 
                  # ===== 🆕 布林带保护参数 =====
-                 bb_narrow_threshold: float = 0.01,          # BB宽度 < 价格的1% 视为过窄
+                 bb_narrow_threshold: float = 0.02,          # BB宽度 < 价格的1% 视为过窄
                  bb_narrow_action: str = 'WARN',             # 'WARN' 降低信心, 'BLOCK' 禁止交易
 
                  # 其他
@@ -130,7 +134,9 @@ class SimpleUpTrendStrategy:
         self.uptrend_take_profit = uptrend_take_profit
         self.range_buy_threshold = range_buy_threshold
         self.range_sell_threshold = range_sell_threshold
-
+        self.downtrend_buy_threshold = downtrend_buy_threshold
+        self.downtrend_sell_threshold = downtrend_sell_threshold
+        
         # 止损参数
         self.quick_stop_loss = quick_stop_loss
         self.normal_stop_loss = normal_stop_loss
@@ -712,7 +718,7 @@ class SimpleUpTrendStrategy:
 
         elif market_state == 'DOWNTREND':
             signal, confidence, reason = self._downtrend_strategy(
-                current_position, avg_cost, current_price, pnl_pct
+                current_position, current_price, bb_position, pnl_pct
             )
 
         else:  # UNCLEAR
@@ -757,7 +763,7 @@ class SimpleUpTrendStrategy:
             pnl_str = f" ({pnl_pct*100:+.2f}%)" if current_position > 0 else ""
             time_warning = f" ⚠️收盘前{self.no_new_position_minutes}分钟" if is_last_n_min else ""
             bb_warning = f" 📊BB窄" if is_bb_narrow else ""
-
+            print(f"\nTIME: {current_time}")
             print(f"\n{state_emoji.get(market_state, '⚪')} [{market_state}] {ticker} | "
                   f"{pos_str}{pnl_str}{time_warning}{bb_warning}")
             print(f"   价格: ${current_price:.2f} | BB: {bb_position*100:.0f}% | "
@@ -803,18 +809,19 @@ class SimpleUpTrendStrategy:
             else:
                 return 'HOLD', 5, f"持仓等待高点"
 
-    def _downtrend_strategy(self, position: float, avg_cost: float,
-                            price: float, pnl_pct: float) -> Tuple[str, int, str]:
-        """下降趋势策略"""
+    def _downtrend_strategy(self, position: float, price: float,
+                          bb_pos: float, pnl_pct: float) -> Tuple[str, int, str]:
+        """震荡市策略"""
         if position == 0:
-            return 'HOLD', 5, "📉 下降趋势，不开新仓"
-        else:
-            if pnl_pct > self.uptrend_take_profit:
-                return 'SELL', 7, f"📉 下降趋势，锁定利润 (+{pnl_pct*100:.1f}%)"
-            elif pnl_pct > 0:
-                return 'HOLD', 5, f"📉 下降趋势，小盈利观望 (+{pnl_pct*100:.1f}%)"
+            if bb_pos <= self.downtrend_buy_threshold:
+                return 'BUY', 7, f"🟡 震荡低点买入 (BB {bb_pos*100:.0f}%)"
             else:
-                return 'HOLD', 5, f"📉 下降趋势，持仓观望 ({pnl_pct*100:.1f}%)"
+                return 'HOLD', 5, f"等待低点"
+        else:
+            if pnl_pct >= self.uptrend_take_profit or bb_pos >= self.downtrend_sell_threshold:
+                return 'SELL', 7, f"🟡 震荡高点卖出 (BB {bb_pos*100:.0f}%)"
+            else:
+                return 'HOLD', 5, f"持仓等待高点"
 
     def _make_result(self, signal: str, confidence: int, reason: str,
                      price: float, market_state: str, adx: float,

@@ -165,6 +165,7 @@ class SimpleUpTrendConfig:
     # 布林带
     bb_period: int = 20
     bb_std_dev: float = 2.0
+    bb_narrow_threshold = 0.02
     
     # ADX（趋势强度）
     adx_period: int = 14
@@ -179,11 +180,16 @@ class SimpleUpTrendConfig:
     # 上升趋势
     uptrend_buy_low: float = 0.30      # BB 位置下限
     uptrend_buy_high: float = 0.60     # BB 位置上限
+    # 止盈参数
     uptrend_take_profit: float = 0.005  # 止盈 0.5%
     
     # 震荡市场
     range_buy_threshold: float = 0.15  # BB < 20% 买入
     range_sell_threshold: float = 0.50 # BB > 55% 卖出
+    
+    # 下降趋势
+    downtrend_buy_threshold : float = 0.05,
+    downtrend_sell_threshold : float = 0.40,
     
     # ---------- 止损参数 ----------
     quick_stop_loss: float = 0.0005     # 快速止损 0.05%（下降趋势）
@@ -208,6 +214,7 @@ class SimpleUpTrendConfig:
         return {
             'bb_period': self.bb_period,
             'bb_std_dev': self.bb_std_dev,
+            'bb_narrow_threshold': self.bb_narrow_threshold,
             'adx_period': self.adx_period,
             'adx_trend_threshold': self.adx_trend_threshold,
             'adx_range_threshold': self.adx_range_threshold,
