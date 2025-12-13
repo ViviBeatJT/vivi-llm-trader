@@ -17,10 +17,13 @@
 
 v2 改进：
 - 添加止损冷却期，止损后不会立即开仓
+
+v3 改进：
+- 🆕 最后10分钟只允许平仓，禁止开新仓
 """
 
 from typing import Dict, Tuple, Optional
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time
 import pandas as pd
 import numpy as np
 
@@ -42,6 +45,9 @@ class SimpleUpTrendStrategy:
     冷却期机制：
     - 止损后进入冷却期，期间不开新仓
     - 冷却期可以按时间或K线数量计算
+
+    收盘保护：
+    - 🆕 最后10分钟只允许平仓，不允许开新仓
     """
 
     def __init__(self,
@@ -84,6 +90,10 @@ class SimpleUpTrendStrategy:
                  cooldown_bars: int = 5,                     # 止损后冷却 5 根K线
                  cooldown_minutes: int = 0,                  # 或者冷却 N 分钟（0表示用K线数）
 
+                 # ===== 🆕 收盘保护参数 =====
+                 no_new_position_minutes: int = 10,          # 收盘前N分钟禁止开新仓
+                 market_close_time: time = time(16, 0),      # 美股收盘时间 (ET)
+
                  # 其他
                  max_history_bars: int = 500):
 
@@ -116,6 +126,10 @@ class SimpleUpTrendStrategy:
         # 冷却期参数
         self.cooldown_bars = cooldown_bars
         self.cooldown_minutes = cooldown_minutes
+
+        # 🆕 收盘保护参数
+        self.no_new_position_minutes = no_new_position_minutes
+        self.market_close_time = market_close_time
 
         self.max_history_bars = max_history_bars
 
@@ -158,7 +172,43 @@ class SimpleUpTrendStrategy:
             print(f"  止损后冷却: {cooldown_minutes} 分钟")
         else:
             print(f"  止损后冷却: {cooldown_bars} 根K线")
+        print(f"\n⏰ 收盘保护:")
+        print(f"  收盘前 {no_new_position_minutes} 分钟禁止开新仓")
+        print(f"  收盘时间: {market_close_time.strftime('%H:%M')} ET")
         print(f"{'='*60}\n")
+
+    # ==================== 🆕 收盘保护方法 ====================
+
+    def _is_last_10_minutes(self, current_time) -> bool:
+        """
+        检查是否在收盘前N分钟内
+        
+        Args:
+            current_time: 当前时间 (datetime 或 None)
+            
+        Returns:
+            bool: 是否在禁止开新仓的时间段内
+        """
+        if current_time is None:
+            return False
+        
+        # 获取当前时间的 time 部分
+        if isinstance(current_time, datetime):
+            current_time_only = current_time.time()
+        elif isinstance(current_time, time):
+            current_time_only = current_time
+        else:
+            return False
+        
+        # 计算禁止开仓的开始时间
+        close_minutes = self.market_close_time.hour * 60 + self.market_close_time.minute
+        cutoff_minutes = close_minutes - self.no_new_position_minutes
+        cutoff_hour = cutoff_minutes // 60
+        cutoff_minute = cutoff_minutes % 60
+        cutoff_time = time(cutoff_hour, cutoff_minute)
+        
+        # 检查当前时间是否在 [cutoff_time, market_close_time) 区间内
+        return cutoff_time <= current_time_only < self.market_close_time
 
     # ==================== 冷却期管理方法 ====================
 
@@ -453,6 +503,15 @@ class SimpleUpTrendStrategy:
             return self._make_result(signal, confidence, reason, current_price,
                                      market_state, current_adx, bb_position, current_allocation), df
 
+        # --- 🆕 最后10分钟只允许平仓，禁止开新仓 ---
+        is_last_10_min = self._is_last_10_minutes(current_time)
+        if is_last_10_min and current_position == 0:
+            reason = f"⏰ 收盘前{self.no_new_position_minutes}分钟，不开新仓"
+            if verbose:
+                print(f"   {reason}")
+            return self._make_result('HOLD', 5, reason, current_price,
+                                     market_state, current_adx, bb_position, current_allocation), df
+
         # --- 止损检查（根据市场状态使用不同阈值）---
         if current_position > 0 and avg_cost > 0:
             # 下降趋势使用快速止损
@@ -516,8 +575,11 @@ class SimpleUpTrendStrategy:
             pos_str = f"持仓 {int(current_position)} 股" if current_position > 0 else "空仓"
             pnl_str = f" ({pnl_pct*100:+.2f}%)" if current_position > 0 else ""
 
+            # 🆕 显示是否在最后10分钟
+            time_warning = " ⚠️收盘前10分钟" if is_last_10_min else ""
+
             print(
-                f"\n{state_emoji.get(market_state, '⚪')} [{market_state}] {ticker} | {pos_str}{pnl_str}")
+                f"\n{state_emoji.get(market_state, '⚪')} [{market_state}] {ticker} | {pos_str}{pnl_str}{time_warning}")
             print(
                 f"   价格: ${current_price:.2f} | BB: {bb_position*100:.0f}% | ADX: {current_adx:.1f}")
             print(f"   📊 当前仓位比例: {current_allocation*100:.0f}%")
@@ -639,11 +701,12 @@ if __name__ == '__main__':
         normal_stop_loss=0.02,      # 2% 正常止损
         reduce_allocation_threshold=0.01,  # 1% 时减仓
         cooldown_bars=5,            # 止损后冷却 5 根K线
+        no_new_position_minutes=10, # 收盘前10分钟不开新仓
     )
 
     # 模拟测试
     print("\n" + "="*50)
-    print("测试动态仓位管理 + 冷却期")
+    print("测试动态仓位管理 + 冷却期 + 收盘保护")
     print("="*50)
 
     ticker = 'TEST'
@@ -674,3 +737,18 @@ if __name__ == '__main__':
     print("\n5. 模拟盈利恢复仓位:")
     strategy._update_allocation_based_on_pnl(ticker, 0.01, 'UPTREND')
     print(f"   当前仓位: {strategy.get_current_allocation(ticker)*100:.0f}%")
+
+    # 🆕 测试收盘前10分钟检查
+    print("\n6. 测试收盘保护:")
+    test_times = [
+        time(15, 45),  # 15:45 - 不在保护期
+        time(15, 50),  # 15:50 - 进入保护期
+        time(15, 55),  # 15:55 - 在保护期内
+        time(15, 59),  # 15:59 - 在保护期内
+        time(16, 0),   # 16:00 - 收盘
+    ]
+    for t in test_times:
+        dt = datetime.combine(datetime.today(), t)
+        is_protected = strategy._is_last_10_minutes(dt)
+        status = "🚫 禁止开仓" if is_protected else "✅ 可以开仓"
+        print(f"   {t.strftime('%H:%M')} - {status}")
