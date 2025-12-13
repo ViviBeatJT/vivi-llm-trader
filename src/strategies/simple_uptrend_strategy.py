@@ -77,15 +77,17 @@ class SimpleUpTrendStrategy:
                  # 上升趋势交易参数
                  uptrend_buy_low: float = 0.40,
                  uptrend_buy_high: float = 0.60,
-                 uptrend_take_profit: float = 0.003,
+                 uptrend_take_profit: float = 0.005,
 
                  # 震荡市交易参数
                  range_buy_threshold: float = 0.20,
                  range_sell_threshold: float = 0.55,
-                 
+                 range_take_profit: float = 0.003,
+
                 # 下降趋势交易参数
                  downtrend_buy_threshold : float = 0.05,
                  downtrend_sell_threshold : float = 0.40,
+                 downtrend_take_profit: float = 0.001,
 
                  # ===== 动态仓位管理参数 =====
                  # 止损参数
@@ -134,8 +136,10 @@ class SimpleUpTrendStrategy:
         self.uptrend_take_profit = uptrend_take_profit
         self.range_buy_threshold = range_buy_threshold
         self.range_sell_threshold = range_sell_threshold
+        self.range_take_profit = range_take_profit
         self.downtrend_buy_threshold = downtrend_buy_threshold
         self.downtrend_sell_threshold = downtrend_sell_threshold
+        self.downtrend_take_profit = downtrend_take_profit
         
         # 止损参数
         self.quick_stop_loss = quick_stop_loss
@@ -804,7 +808,7 @@ class SimpleUpTrendStrategy:
             else:
                 return 'HOLD', 5, f"等待低点"
         else:
-            if pnl_pct >= self.uptrend_take_profit or bb_pos >= self.range_sell_threshold:
+            if pnl_pct >= self.range_take_profit or bb_pos >= self.range_sell_threshold:
                 return 'SELL', 7, f"🟡 震荡高点卖出 (BB {bb_pos*100:.0f}%)"
             else:
                 return 'HOLD', 5, f"持仓等待高点"
@@ -818,7 +822,7 @@ class SimpleUpTrendStrategy:
             else:
                 return 'HOLD', 5, f"等待低点"
         else:
-            if pnl_pct >= self.uptrend_take_profit or bb_pos >= self.downtrend_sell_threshold:
+            if pnl_pct >= self.downtrend_take_profit or bb_pos >= self.downtrend_sell_threshold:
                 return 'SELL', 7, f"🟡 震荡高点卖出 (BB {bb_pos*100:.0f}%)"
             else:
                 return 'HOLD', 5, f"持仓等待高点"

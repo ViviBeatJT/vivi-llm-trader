@@ -180,13 +180,14 @@ class SimpleUpTrendConfig:
     # 上升趋势
     uptrend_buy_low: float = 0.30      # BB 位置下限
     uptrend_buy_high: float = 0.60     # BB 位置上限
-    # 止盈参数
     uptrend_take_profit: float = 0.005  # 止盈 0.5%
     
     # 震荡市场
     range_buy_threshold: float = 0.15  # BB < 20% 买入
     range_sell_threshold: float = 0.50 # BB > 55% 卖出
-    
+    range_take_profit: float = 0.003  # 止盈 0.3%
+    downtrend_take_profit: float = 0.001  # 止盈 0.1%
+
     # 下降趋势
     downtrend_buy_threshold : float = 0.05,
     downtrend_sell_threshold : float = 0.40,
@@ -223,8 +224,10 @@ class SimpleUpTrendConfig:
             'uptrend_buy_low': self.uptrend_buy_low,
             'uptrend_buy_high': self.uptrend_buy_high,
             'uptrend_take_profit': self.uptrend_take_profit,
+            'downtrend_take_profit':self.downtrend_take_profit,
             'range_buy_threshold': self.range_buy_threshold,
             'range_sell_threshold': self.range_sell_threshold,
+            'range_take_profit': self.range_take_profit,
             'quick_stop_loss': self.quick_stop_loss,
             'normal_stop_loss': self.normal_stop_loss,
             'reduce_allocation_threshold': self.reduce_allocation_threshold,
