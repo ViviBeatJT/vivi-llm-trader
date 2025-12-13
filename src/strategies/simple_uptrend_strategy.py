@@ -85,8 +85,8 @@ class SimpleUpTrendStrategy:
 
                  # ===== 动态仓位管理参数 =====
                  # 止损参数
-                 quick_stop_loss: float = 0.005,   # 0.5% 快速止损（下降趋势时）
-                 normal_stop_loss: float = 0.01,   # 1% 正常止损
+                 quick_stop_loss: float = 0.0005,   # 0.5% 快速止损（下降趋势时）
+                 normal_stop_loss: float = 0.001,   # 0.1% 正常止损
 
                  # 仓位调整参数
                  reduce_allocation_threshold: float = 0.01,  # 亏损 1% 时减仓
@@ -200,8 +200,8 @@ class SimpleUpTrendStrategy:
             f"  上升趋势买入: BB {self.uptrend_buy_low*100:.0f}%-{self.uptrend_buy_high*100:.0f}%")
         print(f"  震荡买入: BB < {self.range_buy_threshold*100:.0f}%")
         print(f"\n动态仓位管理:")
-        print(f"  🛑 快速止损: {self.quick_stop_loss*100:.1f}% (下降趋势)")
-        print(f"  🛑 正常止损: {self.normal_stop_loss*100:.1f}%")
+        print(f"  🛑 快速止损: {self.quick_stop_loss*100:.4f}% (下降趋势)")
+        print(f"  🛑 正常止损: {self.normal_stop_loss*100:.4f}%")
         print(f"  📉 减仓触发: 亏损 > {self.reduce_allocation_threshold*100:.1f}%")
         print(f"  📉 减仓比例: 减到 {self.reduce_allocation_ratio*100:.0f}%")
         print(f"  📈 恢复触发: 盈利 > {self.recovery_threshold*100:.1f}%")
@@ -664,7 +664,7 @@ class SimpleUpTrendStrategy:
             if pnl_pct <= -stop_loss:
                 signal = 'SELL'
                 confidence = 10
-                reason = f"🛑 止损! 亏损 {pnl_pct*100:.2f}% (阈值: {stop_loss*100:.1f}%)"
+                reason = f"🛑 止损! 亏损 {pnl_pct*100:.4f}% (阈值: {stop_loss*100:.4f}%)"
 
                 self._reduce_allocation(ticker, "止损触发")
                 self._start_cooldown(ticker, current_time, is_stop_loss=True)
@@ -706,7 +706,7 @@ class SimpleUpTrendStrategy:
 
         elif market_state == 'RANGING':
             signal, confidence, reason = self._ranging_strategy(
-                current_position, current_price, bb_position
+                current_position, current_price, bb_position, pnl_pct
             )
 
         elif market_state == 'DOWNTREND':
@@ -789,7 +789,7 @@ class SimpleUpTrendStrategy:
             return 'HOLD', 5, f"持仓中 ({pnl_pct*100:+.1f}%)"
 
     def _ranging_strategy(self, position: float, price: float,
-                          bb_pos: float) -> Tuple[str, int, str]:
+                          bb_pos: float, pnl_pct: float) -> Tuple[str, int, str]:
         """震荡市策略"""
         if position == 0:
             if bb_pos <= self.range_buy_threshold:
@@ -797,7 +797,7 @@ class SimpleUpTrendStrategy:
             else:
                 return 'HOLD', 5, f"等待低点"
         else:
-            if bb_pos >= self.range_sell_threshold:
+            if pnl_pct >= self.uptrend_take_profit or bb_pos >= self.range_sell_threshold:
                 return 'SELL', 7, f"🟡 震荡高点卖出 (BB {bb_pos*100:.0f}%)"
             else:
                 return 'HOLD', 5, f"持仓等待高点"

@@ -592,8 +592,8 @@ class TestStopLossLogic(unittest.TestCase):
     def setUp(self):
         with SuppressOutput():
             self.strategy = SimpleUpTrendStrategy(
-                quick_stop_loss=0.005,   # 0.5%
-                normal_stop_loss=0.01,   # 1%
+                quick_stop_loss=0.0005,   # 0.05%
+                normal_stop_loss=0.001,   # 1%
                 cooldown_bars=5,
                 verbose_init=False
             )
@@ -608,7 +608,7 @@ class TestStopLossLogic(unittest.TestCase):
                 ticker=self.ticker,
                 new_data=self.data,
                 current_position=100,
-                avg_cost=200,  # 成本远高于当前价格，触发止损
+                avg_cost=100.06,  # 成本远高于当前价格，触发止损
                 current_time_et=datetime(2024, 1, 15, 10, 0)
             )
         
