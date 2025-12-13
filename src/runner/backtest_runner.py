@@ -178,20 +178,13 @@ def run_backtest(
     # Strategy
     strategy = ComponentFactory.create_strategy_from_config(config)
 
-    # Visualizer (optional)
-    visualizer = None
+    # Visualizer - 不在运行时更新，只在最后生成
+    # 先不创建 visualizer，等回测完成后再生成图表
     chart_file = None
     if enable_chart:
         chart_file = str(Path(output_dir) /
                          f"{ticker}_{trading_date}_{strategy_name}.html")
-
-        visualizer = ComponentFactory.create_visualizer(
-            ticker=ticker,
-            output_file=chart_file,
-            auto_open=auto_open_browser,
-            initial_capital=actual_initial_capital
-        )
-        print(f"   Chart: {chart_file}")
+        print(f"   Chart: {chart_file} (will generate after backtest)")
 
     # ==========================================
     # 3. Create Engine Components Container
@@ -203,7 +196,7 @@ def run_backtest(
         position_manager=position_manager,
         data_fetcher=data_fetcher,
         executor=executor,
-        visualizer=visualizer,
+        visualizer=None,  # 不传入 visualizer，避免运行时更新
     )
 
     # ==========================================
@@ -223,6 +216,41 @@ def run_backtest(
 
     # Run backtest
     report = engine.run(start_time, end_time, progress_interval=10)
+
+    # ==========================================
+    # 5. Generate Chart (after backtest completes)
+    # ==========================================
+
+    if enable_chart and chart_file:
+        print(f"\n📊 Generating chart...")
+        try:
+            visualizer = ComponentFactory.create_visualizer(
+                ticker=ticker,
+                output_file=chart_file,
+                auto_open=auto_open_browser,
+                initial_capital=actual_initial_capital
+            )
+
+            # 获取最终数据
+            strategy_df = strategy.get_history_data(ticker)
+            trade_log = position_manager.get_trade_log()
+            final_status = position_manager.get_account_status(
+                strategy_df.iloc[-1]['close'] if not strategy_df.empty else 0)
+
+            if not strategy_df.empty:
+                visualizer.update_data(
+                    market_data=strategy_df,
+                    trade_log=trade_log,
+                    current_equity=final_status.get(
+                        'equity', actual_initial_capital),
+                    current_position=final_status.get('position', 0),
+                    timestamp=end_time
+                )
+                print(f"   ✅ Chart saved: {chart_file}")
+            else:
+                print(f"   ⚠️ No data for chart")
+        except Exception as e:
+            print(f"   ❌ Chart generation failed: {e}")
 
     # Print report
     engine.print_report(report)
