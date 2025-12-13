@@ -14,9 +14,13 @@
 - 亏损超过 quick_stop_loss → 立即止损
 - 亏损超过 reduce_allocation_threshold → 下次交易减仓
 - 盈利后逐步恢复仓位
+
+v2 改进：
+- 添加止损冷却期，止损后不会立即开仓
 """
 
 from typing import Dict, Tuple, Optional
+from datetime import datetime, timedelta
 import pandas as pd
 import numpy as np
 
@@ -34,6 +38,10 @@ class SimpleUpTrendStrategy:
     - 亏损 > quick_stop_loss (0.5%) → 立即止损
     - 亏损 > reduce_threshold (1%) → allocation 减半
     - 盈利 > recovery_threshold (0.5%) → allocation 恢复一档
+
+    冷却期机制：
+    - 止损后进入冷却期，期间不开新仓
+    - 冷却期可以按时间或K线数量计算
     """
 
     def __init__(self,
@@ -72,6 +80,10 @@ class SimpleUpTrendStrategy:
                  min_allocation: float = 0.25,               # 最小仓位 25%
                  max_allocation: float = 1.0,                # 最大仓位 100%
 
+                 # ===== 冷却期参数 =====
+                 cooldown_bars: int = 5,                     # 止损后冷却 5 根K线
+                 cooldown_minutes: int = 0,                  # 或者冷却 N 分钟（0表示用K线数）
+
                  # 其他
                  max_history_bars: int = 500):
 
@@ -101,6 +113,10 @@ class SimpleUpTrendStrategy:
         self.min_allocation = min_allocation
         self.max_allocation = max_allocation
 
+        # 冷却期参数
+        self.cooldown_bars = cooldown_bars
+        self.cooldown_minutes = cooldown_minutes
+
         self.max_history_bars = max_history_bars
 
         # 数据存储
@@ -112,9 +128,14 @@ class SimpleUpTrendStrategy:
         # 上次盈亏状态 ('profit', 'loss', 'neutral')
         self._last_pnl_state: Dict[str, str] = {}
 
+        # ===== 冷却期状态 =====
+        self._stop_loss_time: Dict[str, datetime] = {}   # 止损时间
+        self._stop_loss_bar_count: Dict[str, int] = {}   # 止损时的K线计数
+        self._bar_count: Dict[str, int] = {}             # 当前K线计数
+
         # 打印配置
         print(f"\n{'='*60}")
-        print(f"📈 简单趋势策略 (只做多 + 动态仓位管理)")
+        print(f"📈 简单趋势策略 (只做多 + 动态仓位管理 + 冷却期)")
         print(f"{'='*60}")
         print(f"趋势判断:")
         print(f"  ADX > {adx_trend_threshold} = 趋势市")
@@ -132,7 +153,81 @@ class SimpleUpTrendStrategy:
         print(f"  📈 恢复步长: 每次 +{recovery_step*100:.0f}%")
         print(
             f"  📊 仓位范围: {min_allocation*100:.0f}% - {max_allocation*100:.0f}%")
+        print(f"\n⏳ 冷却期:")
+        if cooldown_minutes > 0:
+            print(f"  止损后冷却: {cooldown_minutes} 分钟")
+        else:
+            print(f"  止损后冷却: {cooldown_bars} 根K线")
         print(f"{'='*60}\n")
+
+    # ==================== 冷却期管理方法 ====================
+
+    def _start_cooldown(self, ticker: str, current_time: datetime = None):
+        """开始冷却期"""
+        if current_time is None:
+            current_time = datetime.now()
+
+        self._stop_loss_time[ticker] = current_time
+        self._stop_loss_bar_count[ticker] = self._bar_count.get(ticker, 0)
+
+        if self.cooldown_minutes > 0:
+            print(f"   ⏳ [冷却期开始] {ticker}: 等待 {self.cooldown_minutes} 分钟")
+        else:
+            print(f"   ⏳ [冷却期开始] {ticker}: 等待 {self.cooldown_bars} 根K线")
+
+    def _is_in_cooldown(self, ticker: str, current_time: datetime = None) -> Tuple[bool, str]:
+        """
+        检查是否在冷却期内
+
+        Returns:
+            (is_cooling, reason): 是否在冷却期，原因说明
+        """
+        if ticker not in self._stop_loss_time:
+            return False, ""
+
+        if current_time is None:
+            current_time = datetime.now()
+
+        # 按时间计算冷却期
+        if self.cooldown_minutes > 0:
+            time_since_stop = current_time - self._stop_loss_time[ticker]
+            cooldown_duration = timedelta(minutes=self.cooldown_minutes)
+
+            if time_since_stop < cooldown_duration:
+                remaining = cooldown_duration - time_since_stop
+                remaining_mins = remaining.total_seconds() / 60
+                return True, f"⏳ 冷却期中，还需 {remaining_mins:.1f} 分钟"
+            else:
+                # 冷却期结束
+                del self._stop_loss_time[ticker]
+                if ticker in self._stop_loss_bar_count:
+                    del self._stop_loss_bar_count[ticker]
+                return False, ""
+
+        # 按K线数量计算冷却期
+        else:
+            current_bar = self._bar_count.get(ticker, 0)
+            stop_bar = self._stop_loss_bar_count.get(ticker, 0)
+            bars_passed = current_bar - stop_bar
+
+            if bars_passed < self.cooldown_bars:
+                remaining = self.cooldown_bars - bars_passed
+                return True, f"⏳ 冷却期中，还需 {remaining} 根K线"
+            else:
+                # 冷却期结束
+                if ticker in self._stop_loss_time:
+                    del self._stop_loss_time[ticker]
+                if ticker in self._stop_loss_bar_count:
+                    del self._stop_loss_bar_count[ticker]
+                return False, ""
+
+    def _clear_cooldown(self, ticker: str):
+        """清除冷却期状态（用于特殊情况）"""
+        if ticker in self._stop_loss_time:
+            del self._stop_loss_time[ticker]
+        if ticker in self._stop_loss_bar_count:
+            del self._stop_loss_bar_count[ticker]
+        print(f"   🔄 [冷却期清除] {ticker}")
 
     # ==================== 仓位管理方法 ====================
 
@@ -293,6 +388,9 @@ class SimpleUpTrendStrategy:
 
         df = self._history_data[ticker]
 
+        # 更新K线计数
+        self._bar_count[ticker] = len(df)
+
         # ========== 2. 计算技术指标 ==========
         close = df['close']
         current_price = close.iloc[-1]
@@ -327,6 +425,14 @@ class SimpleUpTrendStrategy:
         # 当前仓位比例
         current_allocation = self.get_current_allocation(ticker)
 
+        # 获取当前时间（用于冷却期计算）
+        if current_time_et is not None:
+            current_time = current_time_et
+        elif len(df) > 0 and hasattr(df.index[-1], 'to_pydatetime'):
+            current_time = df.index[-1].to_pydatetime()
+        else:
+            current_time = datetime.now()
+
         # ========== 3. 计算盈亏 ==========
         pnl_pct = 0.0
         if current_position > 0 and avg_cost > 0:
@@ -360,12 +466,25 @@ class SimpleUpTrendStrategy:
                 # 止损后减仓
                 self._reduce_allocation(ticker, "止损触发")
 
+                # 🆕 开始冷却期
+                self._start_cooldown(ticker, current_time)
+
                 if verbose:
                     print(f"🛑 [止损] {ticker}: {reason}")
 
                 return self._make_result(signal, confidence, reason, current_price,
                                          market_state, current_adx, bb_position,
                                          self.get_current_allocation(ticker)), df
+
+        # --- 🆕 检查冷却期（只在空仓时检查）---
+        if current_position == 0:
+            is_cooling, cooldown_reason = self._is_in_cooldown(
+                ticker, current_time)
+            if is_cooling:
+                if verbose:
+                    print(f"   {cooldown_reason}")
+                return self._make_result('HOLD', 5, cooldown_reason, current_price,
+                                         market_state, current_adx, bb_position, current_allocation), df
 
         # --- 根据市场状态交易 ---
 
@@ -519,11 +638,12 @@ if __name__ == '__main__':
         quick_stop_loss=0.005,      # 0.5% 快速止损
         normal_stop_loss=0.02,      # 2% 正常止损
         reduce_allocation_threshold=0.01,  # 1% 时减仓
+        cooldown_bars=5,            # 止损后冷却 5 根K线
     )
 
     # 模拟测试
     print("\n" + "="*50)
-    print("测试动态仓位管理")
+    print("测试动态仓位管理 + 冷却期")
     print("="*50)
 
     ticker = 'TEST'
@@ -533,12 +653,24 @@ if __name__ == '__main__':
     strategy._update_allocation_based_on_pnl(ticker, -0.015, 'DOWNTREND')
     print(f"   当前仓位: {strategy.get_current_allocation(ticker)*100:.0f}%")
 
-    # 模拟盈利恢复
-    print("\n2. 模拟盈利恢复仓位:")
-    strategy._update_allocation_based_on_pnl(ticker, 0.01, 'UPTREND')
-    print(f"   当前仓位: {strategy.get_current_allocation(ticker)*100:.0f}%")
+    # 模拟止损触发冷却期
+    print("\n2. 模拟止损触发冷却期:")
+    strategy._bar_count[ticker] = 100
+    strategy._start_cooldown(ticker, datetime.now())
 
-    # 继续盈利
-    print("\n3. 继续盈利:")
-    strategy._update_allocation_based_on_pnl(ticker, 0.035, 'UPTREND')
+    # 检查冷却期
+    print("\n3. 检查冷却期状态:")
+    strategy._bar_count[ticker] = 102  # 只过了2根K线
+    is_cooling, reason = strategy._is_in_cooldown(ticker)
+    print(f"   冷却中: {is_cooling}, 原因: {reason}")
+
+    # 冷却期结束
+    print("\n4. 冷却期结束:")
+    strategy._bar_count[ticker] = 106  # 过了6根K线，超过5根的冷却期
+    is_cooling, reason = strategy._is_in_cooldown(ticker)
+    print(f"   冷却中: {is_cooling}")
+
+    # 模拟盈利恢复
+    print("\n5. 模拟盈利恢复仓位:")
+    strategy._update_allocation_based_on_pnl(ticker, 0.01, 'UPTREND')
     print(f"   当前仓位: {strategy.get_current_allocation(ticker)*100:.0f}%")
