@@ -15,10 +15,13 @@ Features:
 
 Usage:
     # Single strategy
-    python -m src.runner.bulk_backtest_runner --strategy moderate --ticker TSLA --start 2024-12-01 --end 2024-12-31 --local-data --data-dir "/Users/vivi/vivi-llm-trader/data/"
+    python -m src.runner.bulk_backtest_runner --strategy moderate --ticker TSLA --start 2024-12-01 --end 2024-12-31
     
-    # Multiple strategies
-    python rc.runner.bulk_backtest_runner --strategies moderate,trend_aware --ticker TSLA --start 2024-12-01 --end 2024-12-31 --local-data --data-dir "/Users/vivi/vivi-llm-trader/data/"
+    # With local data
+    python -m src.runner.bulk_backtest_runner --strategy up_trend_aware --ticker SPLV --start 2024-12-01 --end 2024-12-31 --local-data --data-dir "/Users/vivi/vivi-llm-trader/data/"
+    
+    # Multiple strategies comparison
+    python -m src.runner.bulk_backtest_runner --strategies moderate,up_trend_aware,mean_reversion --ticker TSLA --start 2024-12-01 --end 2024-12-31
 """
 
 from datetime import datetime, timedelta
@@ -29,15 +32,8 @@ import pandas as pd
 import sys
 
 # Reuse the core backtest logic
-from src.runner.backtest_runner import run_backtest
-from src.factory.component_factory import StrategyRegistry
-
-
-# ==========================================
-# Default Configuration
-# ==========================================
-
-DEFAULT_INITIAL_CAPITAL = 1000.0
+from src.runner.backtest_runner import run_backtest, DEFAULT_INITIAL_CAPITAL
+from src.config.component_factory import StrategyRegistry
 
 
 # ==========================================
@@ -251,8 +247,11 @@ def run_bulk_backtest(
     current_run = 0
     
     for strategy_name in strategies:
-        strategy_info = StrategyRegistry.get_info(strategy_name)
-        print(f"\n📊 Strategy: {strategy_info.name}")
+        try:
+            strategy_info = StrategyRegistry.get_info(strategy_name)
+            print(f"\n📊 Strategy: {strategy_info.name}")
+        except ValueError:
+            print(f"\n📊 Strategy: {strategy_name}")
         print(f"{'='*60}")
         
         # Track capital for this strategy
@@ -383,9 +382,9 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-    python bulk_backtest_runner.py --strategy moderate --ticker TSLA --start 2024-12-01 --end 2024-12-31
-    python bulk_backtest_runner.py --strategies moderate,trend_aware --ticker TSLA --start 2024-12-01 --end 2024-12-31
-    python bulk_backtest_runner.py --strategy moderate --no-consecutive-capital
+    python -m src.runner.bulk_backtest_runner --strategy moderate --ticker TSLA --start 2024-12-01 --end 2024-12-31
+    python -m src.runner.bulk_backtest_runner --strategies moderate,up_trend_aware --ticker TSLA --start 2024-12-01 --end 2024-12-31
+    python -m src.runner.bulk_backtest_runner --strategy moderate --no-consecutive-capital
 
 Available Strategies:
 """ + "\n".join([f"    {k}: {v}" for k, v in StrategyRegistry.list_strategies().items()])
@@ -429,7 +428,14 @@ Available Strategies:
     parser.add_argument(
         '--trading-days-only',
         action='store_true',
-        help='Skip weekends'
+        default=True,
+        help='Skip weekends (default: True)'
+    )
+    
+    parser.add_argument(
+        '--include-weekends',
+        action='store_true',
+        help='Include weekends in backtest dates'
     )
     
     parser.add_argument(
@@ -472,7 +478,7 @@ Available Strategies:
     elif args.strategy:
         strategies = [args.strategy]
     else:
-        strategies = ['moderate']  # Default
+        strategies = ['up_trend_aware']  # Default
     
     # Validate strategies
     available = StrategyRegistry.get_all_keys()
@@ -482,13 +488,16 @@ Available Strategies:
             print(f"   Available: {', '.join(available)}")
             return
     
+    # Determine trading days setting
+    trading_days_only = not args.include_weekends
+    
     # Run bulk backtest
     df = run_bulk_backtest(
         ticker=args.ticker,
         start_date=args.start,
         end_date=args.end,
         strategies=strategies,
-        trading_days_only=args.trading_days_only,
+        trading_days_only=trading_days_only,
         consecutive_capital=not args.no_consecutive_capital,
         output_dir=args.output_dir,
         verbose=args.verbose,
