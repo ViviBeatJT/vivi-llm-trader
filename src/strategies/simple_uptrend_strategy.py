@@ -585,7 +585,7 @@ class SimpleUpTrendStrategy:
 
                  # ===== 布林带保护参数 =====
                  bb_narrow_threshold: float = 0.02,
-                 bb_narrow_action: str = 'BLOCK',
+                 bb_narrow_action: str = 'WARN',
 
                  # ===== 🆕 K线形态参数 =====
                  require_candle_pattern: bool = True,           # 是否强制要求K线形态

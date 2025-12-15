@@ -144,7 +144,7 @@ DEFAULT_DATA_CONFIG = DataConfig()
 
 # 预设配置
 DATA_PRESETS = {
-    'fast': DataConfig(timeframe_value=1, lookback_minutes=60, step_seconds=60),
+    'fast': DataConfig(timeframe_value=1, lookback_minutes=60, step_seconds=1),
     'medium': DataConfig(timeframe_value=5, lookback_minutes=300, step_seconds=60),
     'slow': DataConfig(timeframe_value=15, lookback_minutes=1000, step_seconds=60),
 }
