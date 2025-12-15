@@ -263,13 +263,26 @@ class LocalDataFetcher(BaseDataFetcher):
         Returns:
             Latest closing price, or 0.0 if unavailable
         """
-        if ticker and ticker != self.ticker:
-            self._load_data(ticker)
-        
-        if self._latest_data is None or self._latest_data.empty:
-            return 0.0
-        
-        return float(self._latest_data['close'].iloc[-1])
+        if not current_time:
+            if ticker and ticker != self.ticker:
+                self._load_data(ticker)
+            
+            if self._latest_data is None or self._latest_data.empty:
+                return 0.0
+            
+            return float(self._latest_data['close'].iloc[-1])
+        else:
+            end_time=current_time
+            start_time = end_time - timedelta(minutes=1)
+            df = self._data
+            mask = (df.index >= start_time) & (df.index <= end_time)
+            filtered_df = df.loc[mask].copy()
+            
+            # Select only OHLCV columns
+            output_cols = ['close']
+            available_cols = [c for c in output_cols if c in filtered_df.columns]
+            filtered_df = filtered_df[available_cols]
+            return float(filtered_df['close'].iloc[-1])
     
     def get_available_tickers(self) -> List[str]:
         """

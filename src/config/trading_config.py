@@ -145,7 +145,7 @@ DEFAULT_DATA_CONFIG = DataConfig()
 # 预设配置
 DATA_PRESETS = {
     'fast': DataConfig(timeframe_value=1, lookback_minutes=60, step_seconds=60),
-    'medium': DataConfig(timeframe_value=5, lookback_minutes=300, step_seconds=30),
+    'medium': DataConfig(timeframe_value=5, lookback_minutes=300, step_seconds=60),
     'slow': DataConfig(timeframe_value=15, lookback_minutes=1000, step_seconds=60),
 }
 
@@ -180,20 +180,20 @@ class SimpleUpTrendConfig:
     # 上升趋势
     uptrend_buy_low: float = 0.30      # BB 位置下限
     uptrend_buy_high: float = 0.60     # BB 位置上限
-    uptrend_take_profit: float = 0.005  # 止盈 0.5%
+    uptrend_take_profit: float = 0.008  # 止盈 0.5%
     
     # 震荡市场
     range_buy_threshold: float = 0.15  # BB < 20% 买入
-    range_sell_threshold: float = 0.50 # BB > 55% 卖出
-    range_take_profit: float = 0.003  # 止盈 0.3%
-    downtrend_take_profit: float = 0.001  # 止盈 0.1%
+    range_sell_threshold: float = 0.55 # BB > 55% 卖出
+    range_take_profit: float = 0.005  # 止盈 0.3%
 
     # 下降趋势
-    downtrend_buy_threshold : float = 0.05,
-    downtrend_sell_threshold : float = 0.40,
-    
+    downtrend_buy_threshold : float = 0.1,
+    downtrend_sell_threshold : float = 0.50,
+    downtrend_take_profit: float = 0.003  # 止盈 0.1%
+
     # ---------- 止损参数 ----------
-    quick_stop_loss: float = 0.001     # 快速止损 0.1%（下降趋势）
+    quick_stop_loss: float = 0.002     # 快速止损 0.1%（下降趋势）
     normal_stop_loss: float = 0.005     # 正常止损 0.5%
     
     # ---------- 动态仓位管理 ----------
