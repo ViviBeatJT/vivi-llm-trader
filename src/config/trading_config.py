@@ -208,7 +208,7 @@ class SimpleUpTrendConfig:
     max_history_bars: int = 500
     
     cooldown_bars: int = 0                   # 止损后冷却 5 根K线
-    cooldown_minutes: int = 0       
+    cooldown_minutes: int = 5       
     
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典"""

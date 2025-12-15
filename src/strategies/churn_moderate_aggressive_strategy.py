@@ -21,7 +21,7 @@ from typing import Dict, Tuple, Optional
 import pandas as pd
 import numpy as np
 from src.strategies.moderate_aggressive_strategy import ModerateAggressiveStrategy
-
+from src.strategies.simple_uptrend_strategy import SimpleUpTrendStrategy
 
 class ChurnModerateAggressiveStrategy:
     """
@@ -74,10 +74,10 @@ class ChurnModerateAggressiveStrategy:
             force_close_time: 强制平仓时间（分钟）
                 - 默认 955 = 15:55
         """
-        self.moderate_aggressive_strategy = ModerateAggressiveStrategy(
+        self.moderate_aggressive_strategy = SimpleUpTrendStrategy(
             bb_period, bb_std_dev, entry_threshold, exit_threshold, stop_loss_threshold, monitor_interval_seconds, max_history_bars, no_new_entry_time, force_close_time)
 
-    def _get_churn_signal(self,signal: str):
+    def _get_churn_signal(self, signal: str):
         if signal == 'SHORT':
             return 'BUY'
         if signal == 'BUY':
