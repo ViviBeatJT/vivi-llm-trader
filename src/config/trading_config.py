@@ -78,7 +78,7 @@ FINANCE_PRESETS = {
     'small': FinanceConfig(initial_capital=1000, max_allocation=0.95),
     'medium': FinanceConfig(initial_capital=5000, max_allocation=0.90),
     'large': FinanceConfig(initial_capital=25000, max_allocation=0.80),
-    'paper': FinanceConfig(initial_capital=100000, max_allocation=0.50),
+    'paper': FinanceConfig(initial_capital=200000, max_allocation=0.01),
 }
 
 
@@ -144,7 +144,7 @@ DEFAULT_DATA_CONFIG = DataConfig()
 
 # 预设配置
 DATA_PRESETS = {
-    'fast': DataConfig(timeframe_value=1, lookback_minutes=60, step_seconds=1),
+    'fast': DataConfig(timeframe_value=1, lookback_minutes=60, step_seconds=10),
     'medium': DataConfig(timeframe_value=5, lookback_minutes=300, step_seconds=60),
     'slow': DataConfig(timeframe_value=15, lookback_minutes=1000, step_seconds=60),
 }
