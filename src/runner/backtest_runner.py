@@ -11,7 +11,7 @@ It handles:
 4. Running the engine
 
 Usage:
-    python -m src.runner.backtest_runner --strategy moderate --ticker TSLA --date 2025-01-01
+    python -m src.runner.backtest_runner --strategy up_trend_aware --ticker TSLA --date 2025-01-01 --finance-preset small --monitor-frequency fast --local-data --data-dir "/Users/vivi/vivi-llm-trader/data/"
     python -m src.runner.backtest_runner --strategy up_trend_aware --ticker SPLV --date 2025-12-05 --finance-preset small --monitor-frequency fast --local-data --data-dir "/Users/vivi/vivi-llm-trader/data/"
 """
 
