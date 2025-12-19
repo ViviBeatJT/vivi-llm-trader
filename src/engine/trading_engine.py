@@ -3,14 +3,15 @@
 """
 TradingEngine - Core trading logic shared between backtest and live trading.
 
-使用集中配置系统，不再定义重复的配置类。
+Email notifications are handled at this level since the engine has full context
+of the trade (signal data, market state, reason, etc.).
 
 Usage:
     from src.config.trading_config import get_full_config
     from src.engine.trading_engine import TradingEngine
     
     config = get_full_config(ticker='TSLA', mode='paper')
-    engine = TradingEngine.from_config(config)
+    engine = TradingEngine.from_config(config, enable_email=True)
     result = engine.run()
 """
 
@@ -22,6 +23,20 @@ import pytz
 
 if TYPE_CHECKING:
     from src.config.trading_config import TradingConfig
+
+# Import email notifier
+EMAIL_AVAILABLE = False
+EmailNotifier = None
+
+try:
+    from src.utils.email_notifier import EmailNotifier
+    EMAIL_AVAILABLE = True
+except ImportError:
+    try:
+        from src.notification.email_notifier import EmailNotifier
+        EMAIL_AVAILABLE = True
+    except ImportError:
+        pass
 
 
 # ==========================================
@@ -66,12 +81,14 @@ class TradingEngine:
     - Trade execution via PositionManager
     - Time-based controls (market hours, force close)
     - Progress tracking and reporting
+    - Email notifications (centralized at engine level)
     """
 
     def __init__(self,
                  components: EngineComponents,
                  config: 'TradingConfig',
-                 mode: Literal['backtest', 'live'] = 'backtest'):
+                 mode: Literal['backtest', 'live'] = 'backtest',
+                 enable_email: bool = True):
         """
         Initialize the trading engine.
 
@@ -79,6 +96,7 @@ class TradingEngine:
             components: Engine components (strategy, position_manager, etc.)
             config: TradingConfig configuration object
             mode: 'backtest' or 'live'
+            enable_email: Whether to enable email notifications
         """
         self.components = components
         self.config = config
@@ -113,17 +131,39 @@ class TradingEngine:
         # Results
         self._equity_history: List[Dict] = []
 
+        # ========== Email Notification Setup ==========
+        self._enable_email = enable_email and EMAIL_AVAILABLE
+        self._email_notifier: Optional[EmailNotifier] = None
+        
+        if self._enable_email and EmailNotifier is not None:
+            try:
+                self._email_notifier = EmailNotifier()
+                if not self._email_notifier.enabled:
+                    self._enable_email = False
+                    print("⚠️ Email notifier disabled due to configuration issues")
+            except Exception as e:
+                print(f"⚠️ Failed to initialize email notifier: {e}")
+                self._enable_email = False
+
+        # Print initialization info
         print(f"🔧 TradingEngine initialized:")
         print(f"   Mode: {mode.upper()}")
         print(f"   Ticker: {self.ticker}")
         print(f"   Strategy: {type(self.strategy).__name__}")
         print(f"   Initial Capital: ${config.finance.initial_capital:,.2f}")
+        print(f"   Email Notifications: {'✅ Enabled' if self._enable_email else '❌ Disabled'}")
+
+    @property
+    def email_enabled(self) -> bool:
+        """Check if email notifications are enabled."""
+        return self._enable_email and self._email_notifier is not None
 
     @classmethod
     def from_config(cls,
                     config: 'TradingConfig',
                     components: Optional[EngineComponents] = None,
-                    mode: Optional[str] = None) -> 'TradingEngine':
+                    mode: Optional[str] = None,
+                    enable_email: bool = True) -> 'TradingEngine':
         """
         从 TradingConfig 创建 Engine
 
@@ -131,6 +171,7 @@ class TradingEngine:
             config: TradingConfig 配置对象
             components: 可选的预创建组件
             mode: 覆盖 config 中的 mode
+            enable_email: 是否启用邮件通知
 
         Returns:
             TradingEngine instance
@@ -150,7 +191,7 @@ class TradingEngine:
             # Executor
             executor = ComponentFactory.create_executor(trading_mode, finance_params)
             
-            # Position manager
+            # Position manager (no email - handled at engine level)
             position_manager = ComponentFactory.create_position_manager(
                 executor,
                 finance_params,
@@ -185,9 +226,110 @@ class TradingEngine:
                 visualizer=visualizer,
             )
 
-        engine_mode = 'live' if actual_mode in [
-            'paper', 'live'] else 'backtest'
-        return cls(components, config, mode=engine_mode)
+        engine_mode = 'live' if actual_mode in ['paper', 'live'] else 'backtest'
+        return cls(components, config, mode=engine_mode, enable_email=enable_email)
+
+    # ==========================================
+    # Email Notification Methods
+    # ==========================================
+
+    def _send_trade_email(self,
+                          action: str,
+                          ticker: str,
+                          price: float,
+                          quantity: int,
+                          reason: str = "",
+                          market_state: str = "",
+                          pnl: float = 0.0,
+                          pnl_pct: float = 0.0,
+                          timestamp: datetime = None):
+        """
+        Send email notification for a trade.
+        
+        Args:
+            action: Trade action (BUY, SELL, etc.)
+            ticker: Stock ticker
+            price: Trade price
+            quantity: Number of shares
+            reason: Reason for the trade
+            market_state: Current market state
+            pnl: Profit/loss amount
+            pnl_pct: Profit/loss percentage
+            timestamp: Trade timestamp
+        """
+        if not self._enable_email or self._email_notifier is None:
+            return
+        
+        try:
+            success = self._email_notifier.send_trade_alert(
+                signal=action,
+                ticker=ticker,
+                price=price,
+                quantity=quantity,
+                reason=reason,
+                pnl=pnl,
+                pnl_pct=pnl_pct,
+                market_state=market_state,
+                timestamp=timestamp or datetime.now(timezone.utc)
+            )
+            
+            if success:
+                print(f"📧 Email notification sent: {action} {ticker} @ ${price:.2f}")
+            else:
+                print(f"⚠️ Email notification failed to send")
+                
+        except Exception as e:
+            print(f"⚠️ Email notification error: {e}")
+
+    def test_email(self, ticker: str = None) -> bool:
+        """
+        Send a test email to verify configuration.
+        
+        Args:
+            ticker: Ticker to use in test (defaults to engine's ticker)
+            
+        Returns:
+            bool: True if email sent successfully
+        """
+        if not self._enable_email or self._email_notifier is None:
+            print("❌ Email notifications are not enabled")
+            return False
+        
+        test_ticker = ticker or self.ticker
+        print(f"📧 Sending test email for {test_ticker}...")
+        
+        return self._email_notifier.send_trade_alert(
+            signal='BUY',
+            ticker=test_ticker,
+            price=100.00,
+            quantity=10,
+            reason='🧪 Test email - please ignore / 测试邮件 - 请忽略',
+            market_state='TEST',
+            timestamp=datetime.now(timezone.utc)
+        )
+
+    def enable_email_notifications(self, enabled: bool = True):
+        """
+        Enable or disable email notifications.
+        
+        Args:
+            enabled: Whether to enable email notifications
+        """
+        if enabled and EMAIL_AVAILABLE and EmailNotifier is not None:
+            if self._email_notifier is None:
+                try:
+                    self._email_notifier = EmailNotifier()
+                except Exception as e:
+                    print(f"⚠️ Failed to create email notifier: {e}")
+                    self._enable_email = False
+                    return
+            
+            self._enable_email = self._email_notifier.enabled
+        else:
+            self._enable_email = False
+        
+        status = "✅ Enabled" if self._enable_email else "❌ Disabled"
+        print(f"📧 Email notifications: {status}")
 
     # ==========================================
     # Time Utilities
@@ -263,12 +405,10 @@ class TradingEngine:
         current_et = self._to_eastern(current_time)
 
         # Get account status
-        account_status = self.position_manager.get_account_status(
-            current_price)
+        account_status = self.position_manager.get_account_status(current_price)
         current_position = account_status.get('position', 0.0)
         avg_cost = account_status.get('avg_cost', 0.0)
-        current_equity = account_status.get(
-            'equity', self.config.finance.initial_capital)
+        current_equity = account_status.get('equity', self.config.finance.initial_capital)
 
         # Check time windows
         is_force_close = self._is_force_close_time(current_time)
@@ -276,13 +416,11 @@ class TradingEngine:
 
         # Log time window transitions
         if not self._last_entry_reached and is_no_entry:
-            print(
-                f"\n⏰ Reached last entry time: {self._format_time_et(current_time)}")
+            print(f"\n⏰ Reached last entry time: {self._format_time_et(current_time)}")
             self._last_entry_reached = True
 
         if not self._force_close_reached and is_force_close:
-            print(
-                f"\n🔔 Reached force close time: {self._format_time_et(current_time)}")
+            print(f"\n🔔 Reached force close time: {self._format_time_et(current_time)}")
             self._force_close_reached = True
 
         # Get strategy signal
@@ -315,24 +453,38 @@ class TradingEngine:
                   f"{signal} @ ${current_price:.2f}")
             print(f"   {signal_data.get('reason', 'N/A')}")
 
-            # Execute
-            success = self.position_manager.execute_and_update(
+            # Execute trade
+            trade_result = self.position_manager.execute_and_update(
                 timestamp=current_time,
                 signal=signal,
                 current_price=current_price,
                 ticker=self.ticker
             )
 
-            if success:
+            if trade_result.get('success', False):
                 self._trades_count += 1
                 trade_executed = True
 
+                # ========== Send Email Notification ==========
+                self._send_trade_email(
+                    action=trade_result.get('action', signal),
+                    ticker=self.ticker,
+                    price=trade_result.get('price', current_price),
+                    quantity=trade_result.get('qty', 0),
+                    reason=signal_data.get('reason', ''),
+                    market_state=signal_data.get('market_state', ''),
+                    pnl=trade_result.get('pnl', 0.0),
+                    pnl_pct=trade_result.get('pnl_pct', 0.0),
+                    timestamp=current_time
+                )
+
                 if self.on_trade_callback:
                     self.on_trade_callback(signal, current_price, current_time)
+            else:
+                print(f"   ⚠️ Trade failed: {trade_result.get('error', 'Unknown error')}")
 
             if self.on_signal_callback:
-                self.on_signal_callback(
-                    signal_data, current_price, current_time)
+                self.on_signal_callback(signal_data, current_price, current_time)
 
         # Update visualizer
         if self.visualizer:
@@ -357,8 +509,7 @@ class TradingEngine:
         })
 
         if self.on_iteration_callback:
-            self.on_iteration_callback(
-                self._iteration, current_time, current_equity)
+            self.on_iteration_callback(self._iteration, current_time, current_equity)
 
         return {
             'status': 'ok',
@@ -376,8 +527,7 @@ class TradingEngine:
 
     def _ensure_flat_position(self, end_time: datetime) -> bool:
         """Ensure all positions are closed at end of session."""
-        df = self._fetch_data(
-            end_dt=end_time if self.mode == 'backtest' else None)
+        df = self._fetch_data(end_dt=end_time if self.mode == 'backtest' else None)
         final_price = df.iloc[-1]['close'] if not df.empty else 0.0
 
         final_status = self.position_manager.get_account_status(final_price)
@@ -396,23 +546,35 @@ class TradingEngine:
             close_signal = 'SELL' if final_position > 0 else 'COVER'
 
             try:
-                self.position_manager.execute_and_update(
+                trade_result = self.position_manager.execute_and_update(
                     timestamp=end_time,
                     signal=close_signal,
                     current_price=final_price,
                     ticker=self.ticker
                 )
 
-                final_status = self.position_manager.get_account_status(
-                    final_price)
+                if trade_result.get('success', False):
+                    # Send email for force close
+                    self._send_trade_email(
+                        action=trade_result.get('action', close_signal),
+                        ticker=self.ticker,
+                        price=trade_result.get('price', final_price),
+                        quantity=trade_result.get('qty', 0),
+                        reason="⏰ 收盘强制平仓 / End-of-day force close",
+                        market_state="MARKET_CLOSE",
+                        pnl=trade_result.get('pnl', 0.0),
+                        pnl_pct=trade_result.get('pnl_pct', 0.0),
+                        timestamp=end_time
+                    )
+
+                final_status = self.position_manager.get_account_status(final_price)
                 final_position = final_status.get('position', 0.0)
 
                 if final_position == 0:
                     print(f"   ✅ Position closed successfully")
                     return True
                 else:
-                    print(
-                        f"   ❌ Warning: Position still open ({final_position} shares)")
+                    print(f"   ❌ Warning: Position still open ({final_position} shares)")
                     return False
 
             except Exception as e:
@@ -446,6 +608,7 @@ class TradingEngine:
         print(f"   Start: {self._format_time_et(start_time)}")
         print(f"   End: {self._format_time_et(end_time)}")
         print(f"   Step: {self.config.data.step_seconds} seconds")
+        print(f"   Email: {'✅ Enabled' if self._enable_email else '❌ Disabled'}")
 
         current_time = start_time
         step = timedelta(seconds=self.config.data.step_seconds)
@@ -458,8 +621,7 @@ class TradingEngine:
                 result = self._process_iteration(current_time)
 
                 if self._iteration % progress_interval == 0:
-                    progress = (current_time - start_time) / \
-                        (end_time - start_time) * 100
+                    progress = (current_time - start_time) / (end_time - start_time) * 100
                     current_et = self._to_eastern(current_time)
                     equity = result.get('equity', 0)
                     position = result.get('position', 0)
@@ -498,6 +660,7 @@ class TradingEngine:
         print(f"{'='*60}")
         print(f"   Ticker: {self.ticker}")
         print(f"   Interval: {interval} seconds")
+        print(f"   Email: {'✅ Enabled' if self._enable_email else '❌ Disabled'}")
         if max_runtime:
             print(f"   Max Runtime: {max_runtime} minutes")
 
@@ -506,11 +669,9 @@ class TradingEngine:
                 current_time = datetime.now(timezone.utc)
 
                 if max_runtime:
-                    runtime = (current_time -
-                               self._start_time).total_seconds() / 60
+                    runtime = (current_time - self._start_time).total_seconds() / 60
                     if runtime >= max_runtime:
-                        print(
-                            f"\n⏰ Max runtime reached ({max_runtime} minutes)")
+                        print(f"\n⏰ Max runtime reached ({max_runtime} minutes)")
                         break
 
                 if self.config.system.respect_market_hours:
@@ -521,8 +682,7 @@ class TradingEngine:
                             print(f"\n🔔 Market closed for today")
                             break
 
-                        print(
-                            f"⏳ [{current_et.strftime('%H:%M:%S')}] Waiting for market hours...")
+                        print(f"⏳ [{current_et.strftime('%H:%M:%S')}] Waiting for market hours...")
                         time_module.sleep(60)
                         continue
 
@@ -544,8 +704,7 @@ class TradingEngine:
         """Main entry point - runs in appropriate mode."""
         if self.mode == 'backtest':
             if start_time is None or end_time is None:
-                raise ValueError(
-                    "start_time and end_time required for backtest mode")
+                raise ValueError("start_time and end_time required for backtest mode")
             return self.run_backtest(start_time, end_time, **kwargs)
         else:
             return self.run_live(**kwargs)
@@ -561,13 +720,11 @@ class TradingEngine:
 
     def _generate_report(self, end_time: datetime) -> Dict[str, Any]:
         """Generate final report."""
-        df = self._fetch_data(
-            end_dt=end_time if self.mode == 'backtest' else None)
+        df = self._fetch_data(end_dt=end_time if self.mode == 'backtest' else None)
         final_price = df.iloc[-1]['close'] if not df.empty else 0.0
         final_status = self.position_manager.get_account_status(final_price)
 
-        runtime_seconds = (datetime.now(
-            timezone.utc) - self._start_time).total_seconds() if self._start_time else 0
+        runtime_seconds = (datetime.now(timezone.utc) - self._start_time).total_seconds() if self._start_time else 0
 
         trade_log = self.position_manager.get_trade_log()
         initial_capital = self.config.finance.initial_capital
@@ -590,18 +747,17 @@ class TradingEngine:
             'force_close_time_reached': self._force_close_reached,
             'last_entry_time_reached': self._last_entry_reached,
             'trade_log': trade_log,
-            'equity_history': self._equity_history
+            'equity_history': self._equity_history,
+            'email_notifications_enabled': self._enable_email
         }
 
         if trade_log is not None and not trade_log.empty:
-            completed_trades = trade_log[trade_log['type'].isin(
-                ['SELL', 'COVER'])]
+            completed_trades = trade_log[trade_log['type'].isin(['SELL', 'COVER'])]
             if not completed_trades.empty and 'net_pnl' in completed_trades.columns:
                 winning_trades = completed_trades[completed_trades['net_pnl'] > 0]
                 report['completed_trades'] = len(completed_trades)
                 report['winning_trades'] = len(winning_trades)
-                report['win_rate'] = len(
-                    winning_trades) / len(completed_trades) if len(completed_trades) > 0 else 0
+                report['win_rate'] = len(winning_trades) / len(completed_trades) if len(completed_trades) > 0 else 0
 
         return report
 
@@ -624,8 +780,7 @@ class TradingEngine:
         print(f"   Initial: ${report['initial_capital']:,.2f}")
         print(f"   Final: ${report['final_equity']:,.2f}")
         print(f"   PnL: ${report['pnl']:,.2f} ({report['pnl_pct']:+.2f}%)")
-        print(
-            f"   Position: {report['final_position']:.0f} shares {'✅' if report['final_position'] == 0 else '⚠️'}")
+        print(f"   Position: {report['final_position']:.0f} shares {'✅' if report['final_position'] == 0 else '⚠️'}")
 
         if 'win_rate' in report:
             print(f"\n📈 Trade Statistics:")
@@ -634,9 +789,9 @@ class TradingEngine:
             print(f"   Win Rate: {report['win_rate']*100:.1f}%")
 
         print(f"\n⏰ Time Controls:")
-        print(
-            f"   Last Entry Reached: {'✅' if report['last_entry_time_reached'] else '❌'}")
-        print(
-            f"   Force Close Reached: {'✅' if report['force_close_time_reached'] else '❌'}")
+        print(f"   Last Entry Reached: {'✅' if report['last_entry_time_reached'] else '❌'}")
+        print(f"   Force Close Reached: {'✅' if report['force_close_time_reached'] else '❌'}")
+
+        print(f"\n📧 Email Notifications: {'✅ Enabled' if report.get('email_notifications_enabled') else '❌ Disabled'}")
 
         print(f"{'='*60}")

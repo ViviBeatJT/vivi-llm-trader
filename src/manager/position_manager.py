@@ -1,12 +1,14 @@
 # src/manager/position_manager.py
 
 """
-仓位管理器 - 带邮件通知功能
+仓位管理器 - Position Manager
 
-在原有功能基础上，增加交易通知功能：
-- 买入时发送邮件警报
-- 卖出时发送邮件警报（包含盈亏信息）
-- 止损时发送邮件警报
+管理交易仓位、现金和交易记录。
+邮件通知功能已移至 TradingEngine。
+
+支持两种模式：
+1. 本地模拟模式：使用 SimulationExecutor，完全本地计算
+2. API 模式：使用 AlpacaExecutor，可从 API 同步仓位状态
 """
 
 from datetime import datetime, timezone
@@ -16,22 +18,10 @@ import pandas as pd
 if TYPE_CHECKING:
     from src.data_fetcher.alpaca_data_fetcher import AlpacaDataFetcher
 
-# 导入邮件通知模块
-try:
-    from src.notification.email_notifier import EmailNotifier, send_trade_alert
-    EMAIL_AVAILABLE = True
-except ImportError:
-    EMAIL_AVAILABLE = False
-    print("⚠️ 邮件通知模块未安装，将禁用邮件功能")
-
 
 class PositionManager:
     """
     仓位管理器 - 管理交易仓位、现金和交易记录。
-
-    新增功能：
-    - 交易时发送邮件警报
-    - 可配置是否启用邮件通知
 
     支持两种模式：
     1. 本地模拟模式：使用 SimulationExecutor，完全本地计算
@@ -41,9 +31,7 @@ class PositionManager:
     def __init__(self,
                  executor,
                  finance_params: Dict[str, Any],
-                 data_fetcher: Optional['AlpacaDataFetcher'] = None,
-                 enable_email_alert: bool = True,
-                 email_recipient: str = None):
+                 data_fetcher: Optional['AlpacaDataFetcher'] = None):
         """
         初始化仓位管理器。
 
@@ -51,8 +39,6 @@ class PositionManager:
             executor: 交易执行器（SimulationExecutor 或 AlpacaExecutor）
             finance_params: 财务参数字典
             data_fetcher: 数据获取器（可选）
-            enable_email_alert: 是否启用邮件警报
-            email_recipient: 邮件接收方（可选，默认使用环境变量）
         """
         self.executor = executor
         self.finance_params = finance_params
@@ -68,39 +54,6 @@ class PositionManager:
 
         # 同步标志
         self._synced = False
-
-        # 邮件通知
-        self._enable_email = enable_email_alert and EMAIL_AVAILABLE
-        self._email_notifier: Optional[EmailNotifier] = None
-
-        if self._enable_email:
-            try:
-                self._email_notifier = EmailNotifier(
-                    recipient_email=email_recipient
-                )
-                if not self._email_notifier.enabled:
-                    self._enable_email = False
-            except Exception as e:
-                print(f"⚠️ 邮件通知初始化失败: {e}")
-                self._enable_email = False
-
-        # 当前交易的额外信息（用于邮件）
-        self._current_trade_info: Dict[str, Any] = {}
-
-    def set_trade_info(self, **kwargs):
-        """
-        设置当前交易的额外信息（用于邮件通知）
-
-        Args:
-            market_state: 市场状态
-            reason: 交易原因
-            pattern: K线形态
-        """
-        self._current_trade_info.update(kwargs)
-
-    def clear_trade_info(self):
-        """清除交易信息"""
-        self._current_trade_info = {}
 
     @property
     def position_side(self) -> Literal['long', 'short', 'flat']:
@@ -210,23 +163,36 @@ class PositionManager:
                            timestamp: datetime,
                            signal: str,
                            current_price: float,
-                           ticker: str = "UNKNOWN") -> bool:
+                           ticker: str = "UNKNOWN") -> Dict[str, Any]:
         """
         执行交易并更新仓位。
 
-        会自动发送邮件通知。
+        Returns:
+            Dict with trade result:
+            - success: bool
+            - action: str (actual action taken)
+            - qty: int
+            - price: float
+            - fee: float
+            - pnl: float (for closing trades)
+            - pnl_pct: float
+            - error: str (if failed)
         """
         action = self._translate_signal(signal)
 
         if action is None:
-            print(f"⚪ 信号 {signal} 在当前仓位状态下无需操作 (仓位: {self.position_side})")
-            return False
+            return {
+                'success': False,
+                'error': f"信号 {signal} 在当前仓位状态下无需操作 (仓位: {self.position_side})"
+            }
 
         qty = self._calculate_trade_qty(action, current_price)
 
         if qty <= 0:
-            print(f"⚠️ 计算交易数量为 0，跳过交易")
-            return False
+            return {
+                'success': False,
+                'error': "计算交易数量为 0"
+            }
 
         # 记录交易前的状态（用于计算盈亏）
         pre_trade_avg_cost = self._avg_cost
@@ -241,8 +207,10 @@ class PositionManager:
             )
 
             if not result.get('success', False):
-                print(f"❌ 交易执行失败: {result.get('error', 'Unknown error')}")
-                return False
+                return {
+                    'success': False,
+                    'error': result.get('error', 'Unknown error')
+                }
 
             executed_qty = result.get('qty', qty)
             executed_price = result.get('price', current_price)
@@ -274,32 +242,25 @@ class PositionManager:
                 pnl=pnl
             )
 
-            # ========== 发送邮件通知 ==========
-            if self._enable_email and self._email_notifier:
-                try:
-                    self._email_notifier.send_trade_alert(
-                        signal=action,
-                        ticker=ticker,
-                        price=executed_price,
-                        quantity=executed_qty,
-                        reason=self._current_trade_info.get('reason', ''),
-                        pnl=pnl,
-                        pnl_pct=pnl_pct,
-                        market_state=self._current_trade_info.get(
-                            'market_state', ''),
-                        timestamp=timestamp
-                    )
-                except Exception as e:
-                    print(f"⚠️ 发送邮件通知失败: {e}")
-
-            # 清除交易信息
-            self.clear_trade_info()
-
-            return True
+            return {
+                'success': True,
+                'action': action,
+                'qty': executed_qty,
+                'price': executed_price,
+                'fee': fee,
+                'pnl': pnl,
+                'pnl_pct': pnl_pct,
+                'pre_avg_cost': pre_trade_avg_cost,
+                'pre_position': pre_trade_position
+            }
 
         except Exception as e:
-            print(f"❌ 交易执行异常: {e}")
-            return False
+            import traceback
+            traceback.print_exc()
+            return {
+                'success': False,
+                'error': str(e)
+            }
 
     def _calculate_trade_qty(self, action: str, current_price: float) -> int:
         """计算交易数量。"""
@@ -409,6 +370,12 @@ class PositionManager:
             return pd.DataFrame()
         return pd.DataFrame(self._trade_log)
 
+    def get_last_trade(self) -> Optional[Dict[str, Any]]:
+        """获取最后一笔交易记录。"""
+        if not self._trade_log:
+            return None
+        return self._trade_log[-1]
+
     def reset(self):
         """重置仓位管理器状态。"""
         self._cash = self.finance_params.get('INITIAL_CAPITAL', 100000.0)
@@ -416,22 +383,9 @@ class PositionManager:
         self._avg_cost = 0.0
         self._trade_log = []
         self._synced = False
-        self._current_trade_info = {}
         print("🔄 仓位管理器已重置")
 
     def set_data_fetcher(self, data_fetcher: 'AlpacaDataFetcher'):
         """设置数据获取器。"""
         self.data_fetcher = data_fetcher
         print("✅ 已设置数据获取器，可使用 sync_from_api() 同步仓位")
-
-    def enable_email_notification(self, enabled: bool = True, recipient: str = None):
-        """启用/禁用邮件通知"""
-        if enabled and EMAIL_AVAILABLE:
-            if self._email_notifier is None:
-                self._email_notifier = EmailNotifier(recipient_email=recipient)
-            self._enable_email = self._email_notifier.enabled
-        else:
-            self._enable_email = False
-
-        status = "启用" if self._enable_email else "禁用"
-        print(f"📧 邮件通知: {status}")
