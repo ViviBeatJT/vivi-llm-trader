@@ -196,14 +196,16 @@ class ComponentFactory:
     def create_visualizer(ticker: str,
                           output_file: str,
                           auto_open: bool = True,
-                          initial_capital: float = 1000.0):
+                          initial_capital: float = 1000.0,
+                          bb_narrow_threshold: float = 0.01):
         """Create chart visualizer."""
         from src.visualization.simple_chart_visualizer import SimpleChartVisualizer
 
         visualizer = SimpleChartVisualizer(
             ticker=ticker,
             output_file=output_file,
-            auto_open=auto_open
+            auto_open=auto_open,
+            bb_narrow_threshold=bb_narrow_threshold
         )
         visualizer.set_initial_capital(initial_capital)
         return visualizer

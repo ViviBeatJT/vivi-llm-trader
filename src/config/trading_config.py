@@ -165,7 +165,7 @@ class SimpleUpTrendConfig:
     # 布林带
     bb_period: int = 20
     bb_std_dev: float = 2.0
-    bb_narrow_threshold = 0.012
+    bb_narrow_threshold = 0.005
     
     # ADX（趋势强度）
     adx_period: int = 14
@@ -382,7 +382,6 @@ class SystemConfig:
     
     # 是否遵循市场时间
     respect_market_hours: bool = True
-
 
 DEFAULT_SYSTEM_CONFIG = SystemConfig()
 

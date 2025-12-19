@@ -43,7 +43,7 @@ class SimpleChartVisualizer:
                  output_file: str = "trading_chart.html",
                  auto_open: bool = False,
                  initial_capital: float = 100000.0,
-                 bb_narrow_threshold: float = 0.02):  # 新增：BB窄幅阈值
+                 bb_narrow_threshold: float = 0.01):  # 新增：BB窄幅阈值
         """
         初始化可视化工具
 

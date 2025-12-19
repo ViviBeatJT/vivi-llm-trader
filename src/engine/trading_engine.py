@@ -172,7 +172,8 @@ class TradingEngine:
                     ticker=config.system.ticker,
                     output_file=chart_file,
                     auto_open=config.system.auto_open_browser,
-                    initial_capital=config.finance.initial_capital
+                    initial_capital=config.finance.initial_capital,
+                    bb_narrow_threshold=config.up_trend_aware.bb_narrow_threshold
                 )
             
             components = EngineComponents(

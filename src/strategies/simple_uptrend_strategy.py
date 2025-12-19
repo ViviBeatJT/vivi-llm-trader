@@ -584,7 +584,7 @@ class SimpleUpTrendStrategy:
                  market_close_time: time = time(16, 0),
 
                  # ===== 布林带保护参数 =====
-                 bb_narrow_threshold: float = 0.02,
+                 bb_narrow_threshold: float = 0.01,
                  bb_narrow_action: str = 'WARN',
 
                  # ===== 🆕 K线形态参数 =====
